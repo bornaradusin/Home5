@@ -1,0 +1,718 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Home5's host checks: the network code, the Home Assistant client, the
+ * layout and the screens, against tests/fake_ha.py over HTTP and HTTPS.
+ *
+ *   test_home5 WORK_DIR FONTS PLAIN_PORT TLS_PORT CA_PEM [SHOTS_DIR|-] [--tls]
+ */
+#include "h5.h"
+#include "h5_draw.h"
+#include "h5_ha.h"
+#include "h5_json.h"
+#include "h5_layout.h"
+#include "h5_net.h"
+#include "h5_ui.h"
+
+#include <arpa/inet.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <math.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
+
+static int checks, failures;
+#define CHECK(cond, ...)                                                   \
+    do {                                                                   \
+        checks++;                                                          \
+        if (!(cond)) {                                                     \
+            failures++;                                                    \
+            fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__);           \
+            fprintf(stderr, __VA_ARGS__);                                  \
+            fputc('\n', stderr);                                           \
+        }                                                                  \
+    } while (0)
+
+static const char *work, *fonts, *ca_pem, *shots;
+static int plain_port, tls_port;
+
+/* ---- the host's network --------------------------------------------------------------------------- */
+
+static int host_resolve(const char *host, uint32_t *address)
+{
+    struct addrinfo hints = { 0 }, *found;
+    hints.ai_family = AF_INET;
+    if (getaddrinfo(host, NULL, &hints, &found)) return -1;
+    *address = ((struct sockaddr_in *)found->ai_addr)->sin_addr.s_addr;
+    freeaddrinfo(found);
+    return 0;
+}
+
+static int wait_for(int sock, short events, int timeout_ms)
+{
+    struct pollfd fd = { sock, events, 0 };
+    int r = poll(&fd, 1, timeout_ms);
+    return r > 0 ? 0 : r == 0 ? H5_NET_AGAIN : -1;
+}
+
+static int host_connect(uint32_t address, uint16_t port, int timeout_ms)
+{
+    struct sockaddr_in to = { 0 };
+    int sock = socket(AF_INET, SOCK_STREAM, 0), error = 0;
+    socklen_t length = sizeof(error);
+    if (sock < 0) return -1;
+    to.sin_family = AF_INET;
+    to.sin_port = htons(port);
+    to.sin_addr.s_addr = address;
+    fcntl(sock, F_SETFL, O_NONBLOCK);
+    if (connect(sock, (struct sockaddr *)&to, sizeof(to)) < 0) {
+        if (errno != EINPROGRESS || wait_for(sock, POLLOUT, timeout_ms) ||
+            getsockopt(sock, SOL_SOCKET, SO_ERROR, &error, &length) || error) {
+            close(sock);
+            return -1;
+        }
+    }
+    return sock;
+}
+
+static int host_send(int sock, const void *data, size_t size, int timeout_ms)
+{
+    for (;;) {
+        ssize_t n = send(sock, data, size, MSG_NOSIGNAL);
+        if (n >= 0) return (int)n;
+        if (errno != EAGAIN) return -1;
+        int w = wait_for(sock, POLLOUT, timeout_ms);
+        if (w) return w;
+    }
+}
+
+static int host_recv(int sock, void *data, size_t size, int timeout_ms)
+{
+    for (;;) {
+        ssize_t n = recv(sock, data, size, 0);
+        if (n >= 0) return (int)n;
+        if (errno != EAGAIN) return -1;
+        int w = wait_for(sock, POLLIN, timeout_ms);
+        if (w) return w;
+    }
+}
+
+static void host_close(int sock) { close(sock); }
+
+static int host_random(void *data, size_t size)
+{
+    int fd = open("/dev/urandom", O_RDONLY);
+    if (fd < 0) return -1;
+    ssize_t n = read(fd, data, size);
+    close(fd);
+    return n == (ssize_t)size ? 0 : -1;
+}
+
+static char log_text[1 << 16];
+static void host_log(const char *line)
+{
+    if (strlen(log_text) + strlen(line) + 2 < sizeof(log_text)) {
+        strcat(log_text, line);
+        strcat(log_text, "\n");
+    }
+    if (getenv("H5_TEST_VERBOSE")) fprintf(stderr, "%s\n", line);
+}
+
+static uint64_t host_clock(void)
+{
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (uint64_t)t.tv_sec * 1000 + (uint64_t)t.tv_nsec / 1000000;
+}
+
+static int64_t host_time(void) { return (int64_t)time(NULL); }
+
+static void url(char *out, size_t size, int tls, int port)
+{
+    snprintf(out, size, "%s://localhost:%d", tls ? "https" : "http", port);
+}
+
+/* ---- pieces ------------------------------------------------------------------------------------------ */
+
+static void test_pieces(void)
+{
+    H5Url u;
+    char text[300];
+    {
+        /* Shapes: a triangle is filled inside, not outside. */
+        static uint32_t px[40 * 40];
+        H5Canvas canvas = { px, 40, 40, 40 };
+        h5_clear(&canvas, 0xff000000u);
+        h5_triangle(&canvas, 20, 5, 5, 35, 35, 35, 0, 0xffffffffu);
+        CHECK(px[25 * 40 + 20] == 0xffffffffu && px[6 * 40 + 6] == 0xff000000u, "a triangle: %08x inside, %08x outside",
+              px[25 * 40 + 20], px[6 * 40 + 6]);
+    }
+    CHECK(!h5_url_parse("http://192.168.1.20:8123", &u) && !u.tls && !strcmp(u.host, "192.168.1.20") && u.port == 8123 &&
+              !u.path[0], "plain address");
+    CHECK(!h5_url_parse(" https://home.example/ha/ ", &u) && u.tls && u.port == 443 && !strcmp(u.path, "/ha"), "https, base path");
+    CHECK(!h5_url_parse("homeassistant.local:8123", &u) && !u.tls && u.port == 8123, "no scheme");
+    CHECK(h5_url_parse("ftp://x", &u) && h5_url_parse("http://:80", &u) && h5_url_parse("http://a:99999", &u) &&
+              h5_url_parse("http://user@host", &u), "bad addresses refused");
+    h5_url_parse("https://home.example:8443/ha", &u);
+    h5_url_text(&u, text, sizeof(text));
+    CHECK(!strcmp(text, "https://home.example:8443/ha"), "address text: %s", text);
+
+    /* RFC 6455's own example */
+    uint8_t digest[20];
+    char accept[40];
+    const char *both = "dGhlIHNhbXBsZSBub25jZQ==258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    h5_sha1(both, strlen(both), digest);
+    h5_base64(digest, 20, accept, sizeof(accept));
+    CHECK(!strcmp(accept, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="), "websocket accept: %s", accept);
+    h5_sha1("", 0, digest);
+    h5_base64(digest, 20, accept, sizeof(accept));
+    CHECK(!strcmp(accept, "2jmj7l5rSw0yVb/vlWAYkK/YBwk="), "sha1 of nothing: %s", accept);
+    h5_base64("ab", 2, accept, sizeof(accept));
+    CHECK(!strcmp(accept, "YWI="), "base64 padding");
+
+    H5Buf b = { 0 };
+    h5_json_quote(&b, "say \"hi\"\n\x01 é");
+    h5_buf_terminate(&b);
+    CHECK(!strcmp((char *)b.data, "\"say \\\"hi\\\"\\n\\u0001 é\""), "json quote: %s", b.data);
+    b.len = 0;
+    h5_url_encode(&b, "a b&c=d/é");
+    h5_buf_terminate(&b);
+    CHECK(!strcmp((char *)b.data, "a%20b%26c%3Dd%2F%C3%A9"), "url encode: %s", b.data);
+    b.len = 0;
+    uint8_t mask[4] = { 1, 2, 3, 4 }, big[70000];
+    memset(big, 'x', sizeof(big));
+    h5_ws_frame(&b, 1, "hi", 2, mask);
+    CHECK(b.len == 8 && b.data[0] == 0x81 && b.data[1] == 0x82 && b.data[6] == ('h' ^ 1) && b.data[7] == ('i' ^ 2), "small frame");
+    b.len = 0;
+    h5_ws_frame(&b, 1, big, sizeof(big), mask);
+    CHECK(b.len == 14 + sizeof(big) && b.data[1] == (0x80 | 127) && b.data[7] == 0x01 && b.data[8] == 0x11 && b.data[9] == 0x70,
+          "64-bit length frame");
+    h5_buf_free(&b);
+    char copied[6];
+    h5_copy(copied, sizeof(copied), "abcdé");
+    CHECK(!strcmp(copied, "abcd"), "copy keeps characters whole: %s", copied);
+
+    H5Entity e = { 0 };
+    char status[100];
+    e.kind = H5_LIGHT;
+    e.available = 1;
+    e.on = 1;
+    e.brightness = 204;
+    h5_entity_status(&e, "°C", status, sizeof(status));
+    CHECK(!strcmp(status, "On · 80 %"), "light status: %s", status);
+    e.kind = H5_SENSOR;
+    strcpy(e.state, "21.43");
+    strcpy(e.unit, "°C");
+    h5_entity_status(&e, "°C", status, sizeof(status));
+    CHECK(!strcmp(status, "21.4 °C"), "sensor status: %s", status);
+    e.kind = H5_BINARY;
+    strcpy(e.device_class, "door");
+    strcpy(e.state, "off");
+    h5_entity_status(&e, "°C", status, sizeof(status));
+    CHECK(!strcmp(status, "Closed"), "door status: %s", status);
+}
+
+/* ---- the client ------------------------------------------------------------------------------------- */
+
+static char told[512];
+static int told_count;
+static void notified(void *context, const char *title, const char *message)
+{
+    (void)context;
+    told_count++;
+    snprintf(told, sizeof(told), "%s: %s", title, message);
+}
+
+static void client(H5Ha *ha)
+{
+    h5_ha_init(ha);
+    ha->clock_ms = host_clock;
+    ha->now = host_time;
+    ha->log = host_log;
+    ha->notify = notified;
+}
+
+/* Polls until the home is loaded (or a few seconds pass). */
+static int until_ready(H5Ha *ha)
+{
+    uint64_t end = host_clock() + 8000;
+    while (ha->phase != H5_READY && host_clock() < end)
+        if (h5_ha_poll(ha, 100) < 0) return -1;
+    return ha->phase == H5_READY ? 0 : -1;
+}
+
+/* Polls until entity's state is value. */
+static int until_state(H5Ha *ha, const char *id, const char *value)
+{
+    uint64_t end = host_clock() + 5000;
+    for (;;) {
+        H5Entity *e = h5_ha_entity(ha, id);
+        if (e && !strcmp(e->state, value)) return 0;
+        if (host_clock() > end || h5_ha_poll(ha, 100) < 0) return -1;
+    }
+}
+
+static void test_client(int tls)
+{
+    H5Ha ha;
+    char address[100], account[600];
+    url(address, sizeof(address), tls, tls ? tls_port : plain_port);
+    snprintf(account, sizeof(account), "%s/account-%d.txt", work, tls);
+
+    client(&ha);
+    CHECK(h5_ha_login(&ha, address, "kevin", "wrong") == H5_LOGIN_FAILED && strstr(ha.error, "password isn't right"),
+          "wrong password: %s", ha.error);
+    CHECK(h5_ha_login(&ha, address, "kevin", "secret") == H5_LOGIN_OK && ha.access[0] && !strncmp(ha.refresh, "RT-", 3) &&
+              ha.phase == H5_OFFLINE, "signed in (tls %d): %s", tls, ha.error);
+    CHECK(!h5_ha_save(&ha, account), "account saved");
+    h5_ha_free(&ha);
+
+    client(&ha);
+    CHECK(!h5_ha_load(&ha, account) && ha.refresh[0] && !ha.access[0] && ha.phase == H5_OFFLINE, "account read back");
+    CHECK(!h5_ha_connect(&ha) && ha.phase == H5_LOADING && ha.access[0], "connected with a refreshed token: %s", ha.error);
+    CHECK(!until_ready(&ha), "home loaded: %s", ha.error);
+    H5Entity *ceiling = h5_ha_entity(&ha, "light.ceiling"), *bedside = h5_ha_entity(&ha, "light.bedroom");
+    H5Entity *climate = h5_ha_entity(&ha, "climate.living"), *blinds = h5_ha_entity(&ha, "cover.blinds");
+    CHECK(ceiling && !strcmp(ceiling->area, "living_room") && ceiling->on && ceiling->brightness == 204 && ceiling->temp &&
+              !ceiling->color && ceiling->kelvin == 2700, "a light by its device's area");
+    CHECK(bedside && !strcmp(bedside->name, "Bedside") && bedside->color && bedside->rgb == 0xff9a62, "a colour light");
+    CHECK(climate && climate->target == 22 && fabsf(climate->current - 21.4f) < 0.01f && climate->mode_count == 4 &&
+              climate->preset_count == 3 && !strcmp(climate->preset, "home") && !strcmp(climate->action, "heating"),
+          "the thermostat");
+    CHECK(blinds && blinds->position == 60, "the blinds");
+    CHECK(h5_ha_entity(&ha, "light.hidden")->hidden && h5_ha_entity(&ha, "sensor.living_rssi")->hidden &&
+              !h5_ha_entity(&ha, "sun.sun") && h5_ha_entity(&ha, "sensor.filler_119"),
+          "hidden, diagnostic and unknown kinds; big messages");
+    CHECK(ha.area_count == 4 && !strcmp(ha.temp_unit, "°C"), "areas and units");
+
+    /* A service call, its state change coming back. */
+    CHECK(!h5_ha_call(&ha, "light", "turn_off", "light.ceiling", NULL) && !until_state(&ha, "light.ceiling", "off") &&
+              !h5_ha_entity(&ha, "light.ceiling")->on, "turned off");
+    CHECK(!h5_ha_call(&ha, "climate", "set_temperature", "climate.living", "\"temperature\":22.5"), "a temperature");
+    uint64_t end = host_clock() + 3000;
+    while (h5_ha_entity(&ha, "climate.living")->target != 22.5f && host_clock() < end) h5_ha_poll(&ha, 50);
+    CHECK(h5_ha_entity(&ha, "climate.living")->target == 22.5f, "the new target");
+    /* A failed call: said why. */
+    h5_ha_call(&ha, "light", "explode", "light.ceiling", NULL);
+    end = host_clock() + 3000;
+    while (!strstr(ha.error, "not found") && host_clock() < end) h5_ha_poll(&ha, 50);
+    CHECK(strstr(ha.error, "explode not found") != NULL, "failure told: %s", ha.error);
+    /* A notification as it comes, not the ones already there. */
+    told_count = 0;
+    h5_ha_call(&ha, "script", "turn_on", "script.notify_test", NULL);
+    end = host_clock() + 3000;
+    while (!told_count && host_clock() < end) h5_ha_poll(&ha, 50);
+    CHECK(told_count == 1 && !strcmp(told, "Doorbell: Someone is at the door"), "notified: %d %s", told_count, told);
+    /* An area renamed in HA: asked for again. */
+    h5_ha_call(&ha, "script", "turn_on", "script.rename_kitchen", NULL);
+    end = host_clock() + 3000;
+    while (strcmp(h5_ha_area(&ha, "kitchen")->name, "Cookhouse") && host_clock() < end) h5_ha_poll(&ha, 50);
+    CHECK(!strcmp(h5_ha_area(&ha, "kitchen")->name, "Cookhouse"), "areas refreshed");
+    /* The connection dropped by the server. */
+    h5_ha_call(&ha, "script", "turn_on", "script.drop", NULL);
+    int got = 0;
+    end = host_clock() + 3000;
+    while ((got = h5_ha_poll(&ha, 50)) >= 0 && host_clock() < end) {}
+    CHECK(got < 0 && ha.phase == H5_OFFLINE, "a dropped connection noticed");
+    CHECK(!h5_ha_connect(&ha) && !until_ready(&ha), "and connected again");
+
+    h5_ha_sign_out(&ha);
+    CHECK(ha.phase == H5_SIGNED_OUT && !ha.refresh[0] && !ha.count, "signed out");
+    h5_ha_free(&ha);
+
+    /* Two-factor: the code asked for, a wrong one, the right one. */
+    client(&ha);
+    CHECK(h5_ha_login(&ha, address, "mfa", "secret") == H5_LOGIN_CODE, "a code asked for");
+    CHECK(h5_ha_login_code(&ha, "000000") == H5_LOGIN_CODE && strstr(ha.error, "code isn't right"), "wrong code");
+    CHECK(h5_ha_login_code(&ha, "123456") == H5_LOGIN_OK && ha.refresh[0], "right code");
+    h5_ha_free(&ha);
+
+    /* A long-lived token. */
+    client(&ha);
+    CHECK(!h5_ha_use_token(&ha, address, "LLT-0123456789abcdefghijklmnopqrstuvwxyz") && !h5_ha_connect(&ha) &&
+              !until_ready(&ha), "a long-lived token");
+    h5_ha_free(&ha);
+    client(&ha);
+    CHECK(!h5_ha_use_token(&ha, address, "LLT-not-the-right-one-at-all-xxxxxxxxxx") && h5_ha_connect(&ha) &&
+              ha.phase == H5_SIGNED_OUT && strstr(ha.error, "doesn't accept this access token"), "a wrong token: %s", ha.error);
+    h5_ha_free(&ha);
+}
+
+static void test_refusals(void)
+{
+    H5Ha ha;
+    char address[100];
+    client(&ha);
+    /* An HTTPS server whose certificate the PS5 has no root for (the TLS test CA isn't loaded yet). */
+    url(address, sizeof(address), 1, tls_port);
+    CHECK(h5_ha_login(&ha, address, "kevin", "secret") == H5_LOGIN_FAILED && strstr(ha.error, "isn't one the PS5 can trust"),
+          "untrusted certificate: %s", ha.error);
+    CHECK(h5_ha_login(&ha, "http://localhost:1", "kevin", "secret") == H5_LOGIN_FAILED && strstr(ha.error, "No answer"),
+          "nothing there: %s", ha.error);
+    CHECK(h5_ha_login(&ha, "http://no-such-host.invalid:8123", "a", "b") == H5_LOGIN_FAILED && strstr(ha.error, "can't find"),
+          "no such host: %s", ha.error);
+    CHECK(h5_ha_login(&ha, "not an address at all", "a", "b") == H5_LOGIN_FAILED && strstr(ha.error, "isn't an address"),
+          "not an address: %s", ha.error);
+    h5_ha_free(&ha);
+}
+
+/* ---- the layout --------------------------------------------------------------------------------------- */
+
+static int room_index(const H5View *v, const char *id)
+{
+    for (int i = 0; i < v->room_count; i++)
+        if (!strcmp(v->rooms[i].id, id)) return i;
+    return -1;
+}
+
+static int room_has(const H5Ha *ha, const H5View *v, const char *room, const char *entity)
+{
+    int r = room_index(v, room);
+    if (r < 0) return 0;
+    for (int i = 0; i < v->rooms[r].count; i++)
+        if (!strcmp(ha->entities[v->items[v->rooms[r].first + i]].id, entity)) return 1;
+    return 0;
+}
+
+static void test_layout(void)
+{
+    H5Ha ha;
+    H5Layout *layout = calloc(1, sizeof(H5Layout)), *back = calloc(1, sizeof(H5Layout));
+    H5View view;
+    char address[100], path[600], id[64];
+    url(address, sizeof(address), 0, plain_port);
+    snprintf(path, sizeof(path), "%s/layout.txt", work);
+
+    client(&ha);
+    h5_ha_use_token(&ha, address, "LLT-0123456789abcdefghijklmnopqrstuvwxyz");
+    CHECK(!h5_ha_connect(&ha) && !until_ready(&ha), "connected for the layout");
+    h5_layout_reset(layout);
+    h5_layout_view(layout, &ha, &view);
+    CHECK(view.room_count == 5 && !strcmp(view.rooms[0].name, "Bedroom") && room_index(&view, "") == 4 &&
+              room_has(&ha, &view, "living_room", "light.ceiling") && !room_has(&ha, &view, "living_room", "light.hidden") &&
+              room_has(&ha, &view, "", "lock.front_door"),
+          "HA's rooms by name, then devices in no area: %d %s", view.room_count, view.room_count ? view.rooms[0].name : "");
+    int living = room_index(&view, "living_room");
+    CHECK(living >= 0 && ha.entities[view.items[view.rooms[living].first]].kind == H5_LIGHT, "lights first");
+    h5_view_free(&view);
+
+    /* Added, removed, renamed, a room made here, moved; kept in the file. */
+    h5_layout_add(layout, "bedroom", "switch.kettle");
+    h5_layout_remove(layout, "living_room", "cover.blinds", 0);
+    h5_layout_rename(layout, "light.ceiling", "Big light");
+    h5_layout_rename(layout, "living_room", "Lounge");
+    CHECK(!h5_layout_new_room(layout, "Gaming corner", id, sizeof(id)) && !strcmp(id, "ps5-1"), "a room made here");
+    h5_layout_add(layout, id, "light.lamp");
+    h5_layout_view(layout, &ha, &view);
+    CHECK(room_has(&ha, &view, "bedroom", "switch.kettle") && room_has(&ha, &view, "kitchen", "switch.kettle") &&
+              !room_has(&ha, &view, "living_room", "cover.blinds") && room_has(&ha, &view, "ps5-1", "light.lamp") &&
+              room_has(&ha, &view, "living_room", "light.lamp"),
+          "added to a room (and still in HA's), removed from one");
+    CHECK(!strcmp(view.rooms[room_index(&view, "living_room")].name, "Lounge") &&
+              !strcmp(h5_layout_name(layout, "light.ceiling", "x"), "Big light"), "renamed");
+    CHECK(room_index(&view, "ps5-1") == 4, "made here: after HA's rooms");
+    h5_layout_move_room(layout, &view, "ps5-1", -1);
+    h5_view_free(&view);
+    h5_layout_view(layout, &ha, &view);
+    CHECK(room_index(&view, "ps5-1") == 3, "moved up");
+    CHECK(!h5_layout_save(layout, path) && !h5_layout_load(back, path) && back->add_count == 2 && back->remove_count == 1 &&
+              back->name_count == 2 && back->room_count == 1 && back->order_count == 6 && back->next_room == 2,
+          "kept in the file");
+    h5_view_free(&view);
+    h5_layout_add(layout, "living_room", "cover.blinds");
+    CHECK(layout->remove_count == 0 && layout->add_count == 2, "putting one back undoes its removal");
+    h5_layout_delete_room(layout, "ps5-1");
+    h5_layout_view(layout, &ha, &view);
+    CHECK(room_index(&view, "ps5-1") < 0 && layout->add_count == 1 && room_index(&view, "garage") >= 0, "a room deleted");
+    h5_view_free(&view);
+    h5_layout_rename(layout, "light.ceiling", "");
+    CHECK(!strcmp(h5_layout_name(layout, "light.ceiling", "HA"), "HA"), "HA's name back");
+    h5_ha_free(&ha);
+    free(layout);
+    free(back);
+}
+
+/* ---- the screens ------------------------------------------------------------------------------------------- */
+
+static char asked[200];
+static int asked_kind = -1, keyboards;
+static int fake_keyboard(void *context, const char *title, const char *text, int kind)
+{
+    (void)context;
+    (void)text;
+    keyboards++;
+    snprintf(asked, sizeof(asked), "%s", title);
+    asked_kind = kind;
+    return 0;
+}
+
+static H5Canvas canvas;
+
+static void frame(H5Ui *ui, uint32_t keys)
+{
+    H5Input input = { keys };
+    h5_ui_update(ui, &input);
+    h5_ui_draw(ui, &canvas);
+}
+
+static int until_screen(H5Ui *ui, const char *name)
+{
+    uint64_t end = host_clock() + 8000;
+    while (strcmp(h5_ui_screen(ui), name) && host_clock() < end) {
+        frame(ui, 0);
+        usleep(10000);
+    }
+    return strcmp(h5_ui_screen(ui), name) ? -1 : 0;
+}
+
+static void shot(const char *name)
+{
+    char file[700];
+    if (!shots) return;
+    snprintf(file, sizeof(file), "%s/%s.ppm", shots, name);
+    FILE *f = fopen(file, "wb");
+    if (!f) return;
+    fprintf(f, "P6\n%d %d\n255\n", canvas.w, canvas.h);
+    for (int i = 0; i < canvas.w * canvas.h; i++) {
+        uint32_t p = canvas.px[i];
+        unsigned char rgb[3] = { (unsigned char)(p >> 16), (unsigned char)(p >> 8), (unsigned char)p };
+        fwrite(rgb, 1, 3, f);
+    }
+    fclose(f);
+}
+
+static int pixel_near(int x, int y, uint32_t want)
+{
+    uint32_t p = canvas.px[y * canvas.w + x];
+    int dr = (int)(p >> 16 & 255) - (int)(want >> 16 & 255), dg = (int)(p >> 8 & 255) - (int)(want >> 8 & 255),
+        db = (int)(p & 255) - (int)(want & 255);
+    return abs(dr) < 12 && abs(dg) < 12 && abs(db) < 12;
+}
+
+static void test_screens(void)
+{
+    char data[600], address[100];
+    static const char *const usb[] = { NULL, NULL };
+    snprintf(data, sizeof(data), "%s/ui", work);
+    url(address, sizeof(address), 0, plain_port);
+    H5Platform platform = { NULL, host_clock, host_time, 3600, fake_keyboard, notified, host_log, 0, data, usb };
+    canvas.w = 1920;
+    canvas.h = 1080;
+    canvas.stride = 1920;
+    canvas.px = calloc(1920 * 1080, 4);
+
+    H5Ui *ui = h5_ui_create(&platform, fonts);
+    CHECK(ui && !strcmp(h5_ui_screen(ui), "sign-in"), "starts at sign-in");
+    frame(ui, 0);
+    shot("01-sign-in");
+    /* Sign in without filling in: told; then the keyboard for each field. */
+    frame(ui, H5_KEY_OPTIONS);
+    CHECK(!strcmp(h5_ui_screen(ui), "sign-in") && keyboards == 0, "nothing typed: stays");
+    frame(ui, H5_KEY_UP);
+    frame(ui, H5_KEY_UP);
+    frame(ui, H5_KEY_UP);
+    frame(ui, H5_KEY_CROSS);
+    CHECK(keyboards == 1 && strstr(asked, "address") && asked_kind == H5_TEXT_ADDRESS, "the keyboard for the address: %s",
+          asked);
+    h5_ui_text(ui, 1, address);
+    frame(ui, H5_KEY_DOWN);
+    frame(ui, H5_KEY_CROSS);
+    CHECK(asked_kind == H5_TEXT_USERNAME, "the username typed as it is (no capitals)");
+    h5_ui_text(ui, 1, "kevin");
+    frame(ui, H5_KEY_DOWN);
+    frame(ui, H5_KEY_CROSS);
+    CHECK(asked_kind == H5_TEXT_PASSWORD, "the password typed hidden");
+    h5_ui_text(ui, 1, "wrong");
+    frame(ui, H5_KEY_DOWN);
+    frame(ui, H5_KEY_CROSS);
+    CHECK(!until_screen(ui, "sign-in"), "a refused sign-in comes back");
+    frame(ui, 0);
+    shot("02-sign-in-refused");
+    frame(ui, H5_KEY_UP);
+    frame(ui, H5_KEY_CROSS);
+    h5_ui_text(ui, 1, "secret");
+    frame(ui, H5_KEY_OPTIONS);
+    CHECK(!strcmp(h5_ui_screen(ui), "busy"), "signing in");
+    shot("03-signing-in");
+    CHECK(!until_screen(ui, "home"), "signed in and home: %s", h5_ui_screen(ui));
+    uint64_t end = host_clock() + 8000;
+    while (h5_ui_ha(ui)->phase != H5_READY && host_clock() < end) frame(ui, 0);
+    frame(ui, 0);
+    CHECK(h5_ui_ha(ui)->phase == H5_READY && h5_ui_view(ui)->room_count == 5, "the rooms: %d", h5_ui_view(ui)->room_count);
+    char account[700];
+    snprintf(account, sizeof(account), "%s/account.txt", data);
+    CHECK(h5_is_file(account), "the account kept");
+
+    /* Rooms by name: Bedroom, Cookhouse (renamed earlier), Garage, Living room, Other devices. */
+    frame(ui, H5_KEY_R1);
+    frame(ui, H5_KEY_R1);
+    frame(ui, H5_KEY_R1);
+    frame(ui, 0);
+    shot("04-home-living-room");
+    /* Its cards: Ceiling light, Floor lamp, Blinds, Thermostat. The ceiling light is off (since the client's
+     * test): the light bar is the console's; on with ✕, the light bar in its colour; off again. */
+    H5Entity *ceiling = h5_ha_entity(h5_ui_ha(ui), "light.ceiling");
+    CHECK(ceiling && !ceiling->on && h5_ui_light_bar(ui) == -1 && h5_ui_triggers(ui), "an off light: the console's light bar");
+    frame(ui, H5_KEY_CROSS);
+    end = host_clock() + 3000;
+    while (strcmp(h5_ha_entity(h5_ui_ha(ui), "light.ceiling")->state, "on") && host_clock() < end) frame(ui, 0);
+    CHECK(!strcmp(h5_ha_entity(h5_ui_ha(ui), "light.ceiling")->state, "on") && h5_ui_light_bar(ui) == 0xffd9a0,
+          "on in HA, the light bar warm white: %x", (unsigned)h5_ui_light_bar(ui));
+    frame(ui, 0);
+    shot("04b-home-light-on");
+    frame(ui, H5_KEY_CROSS);
+    end = host_clock() + 3000;
+    while (strcmp(h5_ha_entity(h5_ui_ha(ui), "light.ceiling")->state, "off") && host_clock() < end) frame(ui, 0);
+    CHECK(!strcmp(h5_ha_entity(h5_ui_ha(ui), "light.ceiling")->state, "off") && h5_ui_light_bar(ui) == -1, "and off");
+    /* R2 three times: on at 30 %. */
+    frame(ui, H5_KEY_R2);
+    frame(ui, H5_KEY_R2);
+    frame(ui, H5_KEY_R2);
+    end = host_clock() + 3000;
+    while (h5_ha_entity(h5_ui_ha(ui), "light.ceiling")->brightness != 77 && host_clock() < end) frame(ui, 0);
+    CHECK(h5_ha_entity(h5_ui_ha(ui), "light.ceiling")->brightness == 77, "brightened to 30 %%: %d",
+          h5_ha_entity(h5_ui_ha(ui), "light.ceiling")->brightness);
+    /* △: its own screen; neutral white with →. */
+    frame(ui, H5_KEY_TRIANGLE);
+    CHECK(!strcmp(h5_ui_screen(ui), "light"), "the light's screen");
+    frame(ui, H5_KEY_RIGHT);
+    end = host_clock() + 3000;
+    while (h5_ha_entity(h5_ui_ha(ui), "light.ceiling")->kelvin != 4000 && host_clock() < end) frame(ui, 0);
+    CHECK(h5_ha_entity(h5_ui_ha(ui), "light.ceiling")->kelvin == 4000, "neutral white");
+    frame(ui, 0);
+    shot("05-light");
+    frame(ui, H5_KEY_CIRCLE);
+    CHECK(!strcmp(h5_ui_screen(ui), "home"), "back from the light");
+    /* The blinds: L2 closes them a step. */
+    frame(ui, H5_KEY_RIGHT);
+    frame(ui, H5_KEY_RIGHT);
+    int position = h5_ha_entity(h5_ui_ha(ui), "cover.blinds")->position;
+    frame(ui, H5_KEY_L2);
+    end = host_clock() + 3000;
+    while (h5_ha_entity(h5_ui_ha(ui), "cover.blinds")->position != position - 10 && host_clock() < end) frame(ui, 0);
+    CHECK(h5_ha_entity(h5_ui_ha(ui), "cover.blinds")->position == position - 10, "blinds down a step");
+    frame(ui, 0);
+    shot("06-home-blinds");
+    /* The thermostat (the next row): its screen, half a degree up, cooling, heating again. */
+    frame(ui, H5_KEY_DOWN);
+    frame(ui, H5_KEY_CROSS);
+    CHECK(!strcmp(h5_ui_screen(ui), "climate"), "the thermostat's screen: %s", h5_ui_screen(ui));
+    float target = h5_ha_entity(h5_ui_ha(ui), "climate.living")->target;
+    frame(ui, H5_KEY_R2);
+    end = host_clock() + 3000;
+    while (h5_ha_entity(h5_ui_ha(ui), "climate.living")->target != target + 0.5f && host_clock() < end) frame(ui, 0);
+    CHECK(h5_ha_entity(h5_ui_ha(ui), "climate.living")->target == target + 0.5f, "half a degree up");
+    frame(ui, H5_KEY_RIGHT);
+    frame(ui, H5_KEY_CROSS);
+    end = host_clock() + 3000;
+    while (strcmp(h5_ha_entity(h5_ui_ha(ui), "climate.living")->state, "cool") && host_clock() < end) frame(ui, 0);
+    CHECK(!strcmp(h5_ha_entity(h5_ui_ha(ui), "climate.living")->state, "cool"), "cool mode");
+    frame(ui, H5_KEY_LEFT);
+    frame(ui, H5_KEY_CROSS);
+    frame(ui, H5_KEY_DOWN);
+    frame(ui, 0);
+    shot("07-thermostat");
+    frame(ui, H5_KEY_CIRCLE);
+    CHECK(!strcmp(h5_ui_screen(ui), "home"), "back home");
+
+    /* The Bedroom's menu: Add, Remove, Rename (device), Rename (room), Move down, New room, … */
+    frame(ui, H5_KEY_L1);
+    frame(ui, H5_KEY_L1);
+    frame(ui, H5_KEY_L1);
+    frame(ui, H5_KEY_OPTIONS);
+    CHECK(!strcmp(h5_ui_screen(ui), "menu"), "the menu");
+    frame(ui, 0);
+    shot("08-menu");
+    frame(ui, H5_KEY_CROSS);
+    CHECK(!strcmp(h5_ui_screen(ui), "pick"), "the picker");
+    /* By HA's rooms: Bedside (Bedroom), then the Kettle (Cookhouse). */
+    frame(ui, H5_KEY_DOWN);
+    frame(ui, H5_KEY_CROSS);
+    frame(ui, 0);
+    shot("09-pick");
+    H5Layout *l = h5_ui_layout(ui);
+    CHECK(l->add_count == 1 && !strcmp(l->adds[0].entity, "switch.kettle") && !strcmp(l->adds[0].room, "bedroom"),
+          "the kettle added to the Bedroom: %d %s", l->add_count, l->add_count ? l->adds[0].entity : "");
+    frame(ui, H5_KEY_CIRCLE);
+    frame(ui, 0);
+    shot("10-bedroom-with-kettle");
+    CHECK(h5_ha_entity(h5_ui_ha(ui), "switch.kettle") && !strcmp(h5_ha_entity(h5_ui_ha(ui), "switch.kettle")->area, "kitchen"),
+          "still in its own room in HA");
+    /* A new room. */
+    frame(ui, H5_KEY_OPTIONS);
+    for (int i = 0; i < 5; i++) frame(ui, H5_KEY_DOWN);
+    keyboards = 0;
+    frame(ui, H5_KEY_CROSS);
+    CHECK(keyboards == 1 && strstr(asked, "New room"), "the new room's keyboard: %s", asked);
+    h5_ui_text(ui, 1, "Gaming corner");
+    frame(ui, 0);
+    CHECK(l->room_count == 1 && !strcmp(l->rooms[0].name, "Gaming corner"), "the room made");
+    shot("11-new-room");
+    /* The lock: asked first. */
+    h5_ui_destroy(ui);
+
+    /* Started again: connects by itself with the kept account, and the room is still there. */
+    ui = h5_ui_create(&platform, fonts);
+    CHECK(ui && !strcmp(h5_ui_screen(ui), "busy"), "connects at start");
+    CHECK(!until_screen(ui, "home"), "home again");
+    end = host_clock() + 8000;
+    while (h5_ui_ha(ui)->phase != H5_READY && host_clock() < end) frame(ui, 0);
+    CHECK(h5_ui_view(ui)->room_count == 6, "six rooms with the one made here: %d", h5_ui_view(ui)->room_count);
+    frame(ui, 0);
+    CHECK(pixel_near(10, 10, 0xff0b0f17u), "the background");
+    shot("12-restarted");
+    /* Signed out from the menu, asked first. */
+    frame(ui, H5_KEY_OPTIONS);
+    for (int i = 0; i < 20; i++) frame(ui, H5_KEY_DOWN);
+    frame(ui, H5_KEY_CROSS);
+    CHECK(!strcmp(h5_ui_screen(ui), "confirm"), "sign out asked");
+    frame(ui, 0);
+    shot("13-sign-out");
+    frame(ui, H5_KEY_CROSS);
+    CHECK(!until_screen(ui, "sign-in") && !h5_is_file(account), "signed out, the account gone");
+    h5_ui_destroy(ui);
+    free(canvas.px);
+}
+
+int main(int argc, char **argv)
+{
+    if (argc < 6) {
+        fprintf(stderr, "usage: test_home5 WORK FONTS PLAIN_PORT TLS_PORT CA_PEM [SHOTS]\n");
+        return 2;
+    }
+    work = argv[1];
+    fonts = argv[2];
+    plain_port = atoi(argv[3]);
+    tls_port = atoi(argv[4]);
+    ca_pem = argv[5];
+    shots = argc > 6 && strcmp(argv[6], "-") ? argv[6] : NULL;
+
+    static const char *roots_none[] = { NULL };
+    H5NetOps ops = { host_resolve, host_connect, host_send, host_recv, host_close, host_random, roots_none, host_log };
+    h5_net_init(&ops);
+    if (argc > 7 && !strcmp(argv[7], "--tls")) {
+        /* HTTPS with the test CA: its own run, since the roots are read once. */
+        static const char *roots[2];
+        roots[0] = ca_pem;
+        ops.ca_files = roots;
+        h5_net_init(&ops);
+        test_client(1);
+        printf("test_home5 (https): %d checks, %d failed\n", checks, failures);
+    } else {
+        test_pieces();
+        test_refusals();
+        test_client(0);
+        test_layout();
+        test_screens();
+        printf("test_home5: %d checks, %d failed\n", checks, failures);
+    }
+    if (failures && getenv("H5_TEST_LOG")) fputs(log_text, stderr);
+    return failures ? 1 : 0;
+}
