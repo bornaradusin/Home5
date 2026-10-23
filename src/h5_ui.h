@@ -18,7 +18,7 @@ enum {
 };
 
 /* What the keyboard is for: names get capitals; the rest is typed as it is. */
-enum { H5_TEXT_NAME, H5_TEXT_PASSWORD, H5_TEXT_USERNAME, H5_TEXT_ADDRESS, H5_TEXT_NUMBER };
+enum { H5_TEXT_NAME, H5_TEXT_PASSWORD, H5_TEXT_USERNAME, H5_TEXT_ADDRESS, H5_TEXT_NUMBER, H5_TEXT_SEARCH };
 
 typedef struct H5Input {
     uint32_t pressed;
@@ -63,5 +63,9 @@ const H5View *h5_ui_view(const H5Ui *ui);
 H5Layout *h5_ui_layout(H5Ui *ui);
 /* The picker's focused entity, or "". */
 const char *h5_ui_picked(const H5Ui *ui);
+/* How many the picker shows (its kind, and what's searched for). */
+int h5_ui_found(const H5Ui *ui);
+/* The menu's focused line, or "". */
+const char *h5_ui_menu_line(H5Ui *ui);
 
 #endif

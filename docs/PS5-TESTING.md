@@ -15,7 +15,9 @@ there (it starts with `H5 ps5 Home5` and the version).
 | 4 | Password | typed hidden; ○ cancels and changes nothing |
 | 5 | Sign in with `http://<IP>:8123` | "Connecting…", then "Make your first room" (or the rooms made before) |
 | 6 | A two-step account | the code screen, the number keyboard |
-| 6b | ✕, a name, then the list: L2 / R2 through the kinds, ✕ on a few | they are in the room when you press ○ |
+| 6b | Options › New room, a name, then the list: L2 / R2 through the kinds, ✕ on a few | they are in the room when you press ○ |
+| 6c | In the list, △, type part of a name (two words), then □ | the keyboard has no capitals at the start; only what matches, "Searching for …" at the top; □ shows everything again |
+| 6d | A room with nothing in it | no card in it: "Nothing in this room yet"; Options › Add to the room opens the list |
 | 7 | ✕ on a light | it switches at once in Home5 and in the house |
 | 8 | Hold R2 / L2 on a light | brightness steps up / down while held; the triggers push back |
 | 9 | △ on a light, left / right, □ | its screen; the colour changes; the light bar follows the light |

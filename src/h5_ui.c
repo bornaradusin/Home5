@@ -39,7 +39,9 @@ static const char *const screen_names[] = { "sign-in", "code", "busy", "home", "
                                             "confirm", "about" };
 
 typedef enum Busy { B_NONE, B_SIGN_IN, B_CODE, B_CONNECT, B_USB, B_SIGN_OUT } Busy;
-typedef enum Ask { A_NONE, A_ADDRESS, A_USERNAME, A_PASSWORD, A_CODE, A_RENAME_DEVICE, A_RENAME_ROOM, A_NEW_ROOM } Ask;
+typedef enum Ask {
+    A_NONE, A_ADDRESS, A_USERNAME, A_PASSWORD, A_CODE, A_RENAME_DEVICE, A_RENAME_ROOM, A_NEW_ROOM, A_SEARCH
+} Ask;
 typedef enum Zone { Z_TABS, Z_GRID } Zone;
 typedef enum Confirm { C_NONE, C_LOCK, C_RESET, C_SIGN_OUT, C_DELETE_ROOM } Confirm;
 typedef enum Item {
@@ -71,12 +73,12 @@ struct H5Ui {
     /* the connection */
     uint64_t retry_at;
     int retries;
-    /* the rooms: the one shown, the tab focused (room_count: "New room"), the card focused
-     * (card_count: the card that adds to the room) */
+    /* the rooms: the one shown, the tab focused, the card focused (making a room and adding to one are in the
+     * menu, not on the screen) */
     int room, room_chosen;
     char room_id[64];
     Zone zone;
-    int tab, tab_left, card, card_top, on_add;
+    int tab, tab_left, card, card_top;
     char focus_id[128];
     /* a value being set with L2/R2: what it's going to, until HA has caught up */
     char adjust_id[128];
@@ -91,6 +93,7 @@ struct H5Ui {
     /* the picker, and which kinds it shows */
     int *pick;
     int pick_count, pick_at, pick_top, pick_filter;
+    char pick_query[128];  /* what was searched for (△): every word in its name, area or id */
     uint32_t pick_built;   /* the HA version it was made from: its indices are only good for that */
     /* asking first, over the home screen or the menu */
     Confirm confirm;
@@ -217,23 +220,21 @@ static H5Entity *focused(H5Ui *ui)
     return ui->focus_id[0] ? h5_ha_entity(&ui->ha, ui->focus_id) : NULL;
 }
 
-/* Keep the focused card by its entity (or the adding card) after the room changed under it. */
+/* Keep the focused card by its entity after the room changed under it (none when the room has no cards). */
 static void refocus(H5Ui *ui, const Contents *c)
 {
-    if (ui->on_add) {
-        ui->card = c->card_count;
-        ui->focus_id[0] = 0;
-        return;
-    }
     for (int i = 0; i < c->card_count; i++)
         if (!strcmp(ui->ha.entities[c->cards[i]].id, ui->focus_id)) {
             ui->card = i;
             return;
         }
-    ui->card = clampi(ui->card, 0, c->card_count);
-    ui->on_add = ui->card == c->card_count;
-    if (!ui->on_add) h5_copy(ui->focus_id, sizeof(ui->focus_id), ui->ha.entities[c->cards[ui->card]].id);
-    else ui->focus_id[0] = 0;
+    if (!c->card_count) {
+        ui->card = 0;
+        ui->focus_id[0] = 0;
+        return;
+    }
+    ui->card = clampi(ui->card, 0, c->card_count - 1);
+    h5_copy(ui->focus_id, sizeof(ui->focus_id), ui->ha.entities[c->cards[ui->card]].id);
 }
 
 static void enter_room(H5Ui *ui, int room)
@@ -243,7 +244,7 @@ static void enter_room(H5Ui *ui, int room)
     ui->room_chosen = ui->view.room_count > 0;
     if (ui->view.room_count) h5_copy(ui->room_id, sizeof(ui->room_id), ui->view.rooms[ui->room].id);
     ui->tab = ui->room;
-    ui->card = ui->card_top = ui->on_add = 0;
+    ui->card = ui->card_top = 0;
     ui->focus_id[0] = 0;
     if (c) {
         contents(ui, c);
@@ -507,7 +508,7 @@ static void menu_text(H5Ui *ui, Item item, char *label, size_t size, char *about
     switch (item) {
     case M_ADD:
         snprintf(label, size, "Add to %s or take out", room_name);
-        h5_copy(about, about_size, "Devices, scenes and sensors from Home Assistant");
+        h5_copy(about, about_size, "Devices, scenes and sensors from Home Assistant, with a search");
         break;
     case M_REMOVE:
         snprintf(label, size, "Remove %s from %s", device, room_name);
@@ -599,7 +600,7 @@ static void menu_choose(H5Ui *ui)
         go(ui, S_HOME);
         break;
     case M_NEW_ROOM:
-        keyboard(ui, A_NEW_ROOM, "New room's name", "", H5_TEXT_NAME);
+        keyboard(ui, A_NEW_ROOM, "The room's name, e.g. Living room", "", H5_TEXT_NAME);
         go(ui, S_HOME);
         break;
     case M_DELETE_ROOM:
@@ -675,6 +676,34 @@ static int filter_count(H5Ui *ui, int filter)
     return n;
 }
 
+/* Whether text has needle in it, letters in either case (ASCII; other letters as they are). */
+static int has_text(const char *text, const char *needle, size_t n)
+{
+    size_t len = strlen(text);
+    for (size_t i = 0; n && i + n <= len; i++)
+        if (!h5_casecmp_n(text + i, needle, n)) return 1;
+    return !n;
+}
+
+/* Whether an entity is what's searched for: every word of it in its name (HA's, or this PS5's), its area's
+ * name or its entity id. */
+static int pick_matches(H5Ui *ui, const H5Entity *e)
+{
+    const char *q = ui->pick_query;
+    const H5Area *area = h5_ha_area(&ui->ha, e->area);
+    char shown[96];
+    h5_display_name(ui->layout, e, NULL, shown, sizeof(shown));
+    while (*q) {
+        while (*q == ' ') q++;
+        size_t n = strcspn(q, " ");
+        if (n && !has_text(e->name, q, n) && !has_text(shown, q, n) && !(area && has_text(area->name, q, n)) &&
+            !has_text(e->id, q, n))
+            return 0;
+        q += n;
+    }
+    return 1;
+}
+
 static void build_pick(H5Ui *ui)
 {
     char keep[128] = "";
@@ -686,7 +715,8 @@ static void build_pick(H5Ui *ui)
     if (!ui->pick) return;
     uint32_t kinds = filters[clampi(ui->pick_filter, 0, FILTERS - 1)].kinds;
     for (int i = 0; i < ui->ha.count; i++)
-        if (!ui->ha.entities[i].hidden && (kinds & KIND(ui->ha.entities[i].kind))) ui->pick[ui->pick_count++] = i;
+        if (!ui->ha.entities[i].hidden && (kinds & KIND(ui->ha.entities[i].kind)) && pick_matches(ui, &ui->ha.entities[i]))
+            ui->pick[ui->pick_count++] = i;
     pick_ui = ui;
     ui->pick_built = ui->ha.version;
     qsort(ui->pick, (size_t)ui->pick_count, sizeof(int), compare_pick);
@@ -700,6 +730,7 @@ static void open_pick(H5Ui *ui)
     h5_free(ui->pick);
     ui->pick = NULL;
     ui->pick_filter = 0;
+    ui->pick_query[0] = 0;
     build_pick(ui);
     ui->menu_from = S_HOME;
     go(ui, S_PICK);
@@ -872,12 +903,24 @@ void h5_ui_text(H5Ui *ui, int ok, const char *text)
             for (int i = 0; i < ui->view.room_count; i++)
                 if (!strcmp(ui->view.rooms[i].id, id)) enter_room(ui, i);
             ui->zone = Z_GRID;
-            ui->on_add = 1;
             if (ui->ha.phase == H5_READY) open_pick(ui);
         } else if (text[0]) {
             toast(ui, "There's no room for another room.");
         }
         break;
+    case A_SEARCH: {
+        /* The picker again, with only what matches (spaces at the ends don't count). */
+        size_t start = strspn(text, " "), end = strlen(text);
+        while (end > start && text[end - 1] == ' ') end--;
+        snprintf(ui->pick_query, sizeof(ui->pick_query), "%.*s", (int)(end - start), text + start);
+        build_pick(ui);
+        if (ui->pick_query[0] && !ui->pick_count && ui->pick_filter) {
+            /* nothing of this kind: all kinds, before saying there's nothing */
+            ui->pick_filter = 0;
+            build_pick(ui);
+        }
+        break;
+    }
     case A_NONE:
         break;
     }
@@ -966,11 +1009,14 @@ static void open_detail(H5Ui *ui, H5Entity *e)
 
 static void focus_card(H5Ui *ui, const Contents *c, int card)
 {
-    ui->card = clampi(card, 0, c->card_count);
-    ui->on_add = ui->card == c->card_count;
-    if (ui->on_add) ui->focus_id[0] = 0;
-    else h5_copy(ui->focus_id, sizeof(ui->focus_id), ui->ha.entities[c->cards[ui->card]].id);
     ui->dirty = 1;
+    if (!c->card_count) {
+        ui->card = 0;
+        ui->focus_id[0] = 0;
+        return;
+    }
+    ui->card = clampi(card, 0, c->card_count - 1);
+    h5_copy(ui->focus_id, sizeof(ui->focus_id), ui->ha.entities[c->cards[ui->card]].id);
 }
 
 static void update_home(H5Ui *ui, uint32_t k)
@@ -991,10 +1037,10 @@ static void update_home(H5Ui *ui, uint32_t k)
         goto out;
     }
     if (!rooms) {
-        /* Nothing yet: the "New room" tab, and ✕ makes the first. */
+        /* Nothing yet: the first is made from the menu (Options › New room). */
         ui->zone = Z_TABS;
         ui->tab = 0;
-        if (k & accept_key(ui)) keyboard(ui, A_NEW_ROOM, "The room's name, e.g. Living room", "", H5_TEXT_NAME);
+        if (k & (accept_key(ui) | H5_KEY_DOWN)) toast(ui, "Press OPTIONS, then New room.");
         goto out;
     }
     if (k & (H5_KEY_L1 | H5_KEY_R1)) {
@@ -1003,21 +1049,20 @@ static void update_home(H5Ui *ui, uint32_t k)
             Zone zone = ui->zone;
             enter_room(ui, to);
             ui->zone = zone;
-            ui->on_add = 0;
             contents(ui, c);
             refocus(ui, c);
         }
         goto out;
     }
     if (ui->zone == Z_TABS) {
-        /* The rooms, then "New room". */
+        /* The rooms (a new one is made from the menu). */
         int before = ui->tab;
-        ui->tab = clampi(ui->tab, 0, rooms);
-        if (k & H5_KEY_LEFT) ui->tab = clampi(ui->tab - 1, 0, rooms);
-        if (k & H5_KEY_RIGHT) ui->tab = clampi(ui->tab + 1, 0, rooms);
+        ui->tab = clampi(ui->tab, 0, rooms - 1);
+        if (k & H5_KEY_LEFT) ui->tab = clampi(ui->tab - 1, 0, rooms - 1);
+        if (k & H5_KEY_RIGHT) ui->tab = clampi(ui->tab + 1, 0, rooms - 1);
         if (ui->tab != before) {
             ui->dirty = 1;
-            if (ui->tab < rooms && ui->tab != ui->room) {
+            if (ui->tab != ui->room) {
                 int tab = ui->tab;
                 enter_room(ui, tab);
                 ui->zone = Z_TABS;
@@ -1025,22 +1070,28 @@ static void update_home(H5Ui *ui, uint32_t k)
                 refocus(ui, c);
             }
         }
-        if (ui->tab == rooms) {
-            if (k & accept_key(ui)) keyboard(ui, A_NEW_ROOM, "The room's name, e.g. Living room", "", H5_TEXT_NAME);
-        } else if (k & H5_KEY_SQUARE) {
+        if (k & H5_KEY_SQUARE) {
             /* □: this room deleted, asked first. */
             ui->confirm = C_DELETE_ROOM;
             ui->confirm_from = S_HOME;
             h5_copy(ui->confirm_id, sizeof(ui->confirm_id), ui->view.rooms[ui->tab].id);
             go(ui, S_CONFIRM);
-        } else if (k & (accept_key(ui) | H5_KEY_DOWN)) {
+        } else if ((k & (accept_key(ui) | H5_KEY_DOWN)) && c->card_count) {
             ui->zone = Z_GRID;
             focus_card(ui, c, 0);
+        } else if (k & (accept_key(ui) | H5_KEY_DOWN)) {
+            toast(ui, "Nothing in %s yet: Options › Add to the room.", ui->view.rooms[ui->tab].name);
         }
         goto out;
     }
-    /* the cards, four across, and last the one that adds to the room */
-    int slots = c->card_count + 1, before = ui->card;
+    /* the cards, four across (adding to the room is in the menu) */
+    int slots = c->card_count, before = ui->card;
+    if (!slots) {
+        ui->zone = Z_TABS;
+        ui->tab = ui->room;
+        ui->dirty = 1;
+        goto out;
+    }
     if ((k & H5_KEY_UP) && ui->card < COLS) {
         ui->zone = Z_TABS;
         ui->tab = ui->room;
@@ -1053,10 +1104,6 @@ static void update_home(H5Ui *ui, uint32_t k)
     if ((k & H5_KEY_DOWN) && ui->card + COLS < slots) ui->card += COLS;
     else if ((k & H5_KEY_DOWN) && ui->card / COLS < (slots - 1) / COLS) ui->card = slots - 1;
     if (ui->card != before) focus_card(ui, c, ui->card);
-    if (ui->on_add) {
-        if (k & accept_key(ui)) open_pick(ui);
-        goto out;
-    }
     H5Entity *e = &ui->ha.entities[c->cards[ui->card]];
     if (k & accept_key(ui)) activate(ui, e);
     if (k & H5_KEY_TRIANGLE) {
@@ -1143,7 +1190,14 @@ static void update_pick(H5Ui *ui, uint32_t k)
 {
     const H5Room *room = current_room(ui);
     if (!room || (k & back_key(ui))) {
+        /* Home, on the room's first card (or what was focused before), so the light bar follows it at once. */
         go(ui, S_HOME);
+        Contents *c = h5_alloc(sizeof(Contents));
+        if (c) {
+            contents(ui, c);
+            refocus(ui, c);
+            h5_free(c);
+        }
         return;
     }
     if (ui->pick_built != ui->ha.version) build_pick(ui);   /* HA's entities changed under it */
@@ -1157,6 +1211,16 @@ static void update_pick(H5Ui *ui, uint32_t k)
                 break;
             }
         }
+        build_pick(ui);
+        ui->dirty = 1;
+    }
+    /* △: search (the keyboard); □: the search cleared. */
+    if (k & H5_KEY_TRIANGLE) {
+        keyboard(ui, A_SEARCH, "Search: a name, a room in Home Assistant, or an id", ui->pick_query, H5_TEXT_SEARCH);
+        return;
+    }
+    if ((k & H5_KEY_SQUARE) && ui->pick_query[0]) {
+        ui->pick_query[0] = 0;
         build_pick(ui);
         ui->dirty = 1;
     }
@@ -1207,7 +1271,7 @@ static void update_confirm(H5Ui *ui, uint32_t k)
         rebuild(ui);
         enter_room(ui, 0);
         ui->zone = Z_TABS;
-        toast(ui, "No rooms now: make one with the New room tab.");
+        toast(ui, "No rooms now: make one with OPTIONS, then New room.");
         go(ui, S_HOME);
         break;
     case C_DELETE_ROOM: {
@@ -1659,20 +1723,19 @@ static void arrow(H5Canvas *c, float x, float cy, int right, uint32_t col)
     else h5_triangle(c, x + 12, cy - 10, x + 12, cy + 10, x, cy, 1.5f, col);
 }
 
-/* The rooms along the top, the one shown filled, then "New room". Scrolled so the one shown
- * (or the one focused) fits. */
+/* The rooms along the top, the one shown filled (new ones are made from the menu). Scrolled so the one
+ * shown (or the one focused) fits. */
 static void room_tabs(H5Ui *ui, H5Canvas *c)
 {
-    int rooms = ui->view.room_count, count = rooms + 1, widths[H5_LAYOUT_ROOMS + 1], lit[H5_LAYOUT_ROOMS + 1];
-    int focus = ui->zone == Z_TABS && ui->screen == S_HOME && ui->ha.phase == H5_READY ? clampi(ui->tab, 0, rooms) : -1;
+    int rooms = ui->view.room_count, count = rooms, widths[H5_LAYOUT_ROOMS], lit[H5_LAYOUT_ROOMS];
+    if (!rooms) return;
+    int focus = ui->zone == Z_TABS && ui->screen == S_HOME && ui->ha.phase == H5_READY ? clampi(ui->tab, 0, rooms - 1) : -1;
     for (int i = 0; i < rooms; i++) {
         lit[i] = room_on(ui, &ui->view.rooms[i]) > 0;
         widths[i] = h5_text_width(&ui->fonts, H5_FACE_LABEL, ui->view.rooms[i].name) + 56 + (lit[i] ? 22 : 0);
         if (widths[i] > 520) widths[i] = 520;
     }
-    lit[rooms] = 0;
-    widths[rooms] = h5_text_width(&ui->fonts, H5_FACE_LABEL, "New room") + 56 + 34;
-    int want = focus >= 0 ? focus : clampi(ui->room, 0, rooms);
+    int want = focus >= 0 ? focus : clampi(ui->room, 0, rooms - 1);
     if (want < ui->tab_left) ui->tab_left = want;
     for (;;) {
         int span = ui->tab_left ? 40 : 0;
@@ -1691,33 +1754,14 @@ static void room_tabs(H5Ui *ui, H5Canvas *c)
             arrow(c, MAIN_X + MAIN_W - 16, cy, 1, C_FAINT);
             break;
         }
-        int shown = i == ui->room && i < rooms;
+        int shown = i == ui->room;
         if (i == focus) h5_round_frame(c, x - 5, y - 5, w + 10, TAB_H + 10, (TAB_H + 10) / 2.0f, 3, C_FOCUS);
         if (shown) h5_round_rect(c, x, y, w, TAB_H, TAB_H / 2.0f, C_CARD_ON);
-        if (i < rooms) {
-            int tw = h5_text(c, &ui->fonts, H5_FACE_LABEL, (int)x + 28, (int)y + 42, shown ? C_TEXT : C_DIM,
-                             ui->view.rooms[i].name, (int)w - 56 - (lit[i] ? 22 : 0), 0);
-            if (lit[i]) h5_circle(c, x + 28 + (float)tw + 16, cy, 5, C_AMBER);
-        } else {
-            h5_line(c, x + 28, cy, x + 48, cy, 3, C_ACCENT_TEXT);
-            h5_line(c, x + 38, cy - 10, x + 38, cy + 10, 3, C_ACCENT_TEXT);
-            h5_text(c, &ui->fonts, H5_FACE_LABEL, (int)x + 62, (int)y + 42, C_ACCENT_TEXT, "New room", 0, 0);
-        }
+        int tw = h5_text(c, &ui->fonts, H5_FACE_LABEL, (int)x + 28, (int)y + 42, shown ? C_TEXT : C_DIM,
+                         ui->view.rooms[i].name, (int)w - 56 - (lit[i] ? 22 : 0), 0);
+        if (lit[i]) h5_circle(c, x + 28 + (float)tw + 16, cy, 5, C_AMBER);
         x += w + TAB_GAP;
     }
-}
-
-/* The last card of a room: it opens the picker. */
-static void add_card(H5Ui *ui, H5Canvas *c, float x, float y, int focus, int empty)
-{
-    if (focus) h5_round_rect(c, x - 4, y - 4, CARD_W + 8, CARD_H + 8, 28, C_FOCUS);
-    h5_round_rect(c, x, y, CARD_W, CARD_H, 24, focus ? C_CARD : C_BG);
-    if (!focus) h5_round_frame(c, x, y, CARD_W, CARD_H, 24, 2, C_TRACK);
-    h5_line(c, x + 36, y + 52, x + 72, y + 52, 4, C_ACCENT_TEXT);
-    h5_line(c, x + 54, y + 34, x + 54, y + 70, 4, C_ACCENT_TEXT);
-    h5_text(c, &ui->fonts, H5_FACE_CARD, (int)x + 32, (int)y + 136, C_TEXT, empty ? "Add to this room" : "Add or take out",
-            CARD_W - 64, 0);
-    h5_text(c, &ui->fonts, H5_FACE_BODY, (int)x + 32, (int)y + 172, C_DIM, "Devices, scenes, sensors", CARD_W - 64, 0);
 }
 
 static void home_screen(H5Ui *ui, H5Canvas *c)
@@ -1730,27 +1774,33 @@ static void home_screen(H5Ui *ui, H5Canvas *c)
     const H5Room *room = current_room(ui);
     int rooms = ui->view.room_count;
 
-    if (rooms || ui->ha.phase == H5_READY) room_tabs(ui, c);
+    room_tabs(ui, c);
     if (ui->ha.phase == H5_READY && !rooms) {
         mark(c, W / 2.0f - 80, 300, 160, C_BG);
         h5_text(c, &ui->fonts, H5_FACE_TITLE, W / 2, 560, C_TEXT, "Make your first room", 0, 1);
         h5_text_wrap(c, &ui->fonts, H5_FACE_TEXT, W / 2 - 550, 620, 1100, 2, 38, C_DIM,
-                     "Your rooms here are your own: name one, then choose the lights, switches, scenes and sensors "
-                     "from Home Assistant that go in it.", 1);
+                     "Your rooms here are your own. Press OPTIONS, then New room: name it, then choose the lights, "
+                     "switches, scenes and sensors from Home Assistant that go in it.", 1);
     }
     /* the room */
     if (room) {
         room_summary(ui, ct, line, sizeof(line));
         h5_text(c, &ui->fonts, H5_FACE_TEXT, MAIN_X + 4, SUMMARY_Y, C_DIM, line, MAIN_W, 0);
-        int slots = ct->card_count + 1, rows = (slots + COLS - 1) / COLS, row = ui->card / COLS;
+        int slots = ct->card_count, rows = (slots + COLS - 1) / COLS, row = ui->card / COLS;
         if (ui->zone == Z_GRID) scroll_to(row, &ui->card_top, GRID_ROWS);
         if (ui->card_top > (rows > GRID_ROWS ? rows - GRID_ROWS : 0)) ui->card_top = rows > GRID_ROWS ? rows - GRID_ROWS : 0;
         int grid = ui->zone == Z_GRID && ui->screen == S_HOME && ui->ha.phase == H5_READY;
         for (int i = ui->card_top * COLS; i < slots && i < (ui->card_top + GRID_ROWS) * COLS; i++) {
             float x = MAIN_X + (float)(i % COLS) * (CARD_W + CARD_GAP);
             float y = GRID_Y + (float)(i / COLS - ui->card_top) * (CARD_H + CARD_GAP);
-            if (i < ct->card_count) card(ui, c, &ui->ha.entities[ct->cards[i]], x, y, grid && ui->card == i);
-            else if (ui->ha.phase == H5_READY) add_card(ui, c, x, y, grid && ui->on_add, !ct->card_count && !ct->reading_count);
+            card(ui, c, &ui->ha.entities[ct->cards[i]], x, y, grid && ui->card == i);
+        }
+        if (!slots && ui->ha.phase == H5_READY) {
+            /* Nothing in it yet: where adding is. */
+            h5_text(c, &ui->fonts, H5_FACE_HEAD, W / 2, GRID_Y + 170, C_TEXT,
+                    ct->reading_count ? "No devices or scenes here yet" : "Nothing in this room yet", 0, 1);
+            h5_text(c, &ui->fonts, H5_FACE_TEXT, W / 2, GRID_Y + 226, C_DIM,
+                    "Press OPTIONS, then Add to the room, to choose what goes in it.", 0, 1);
         }
         if (rows > ui->card_top + GRID_ROWS)
             h5_text(c, &ui->fonts, H5_FACE_SMALL, MAIN_X + MAIN_W, GRID_Y + GRID_ROWS * (CARD_H + CARD_GAP) - 4, C_FAINT,
@@ -1801,19 +1851,21 @@ static void home_screen(H5Ui *ui, H5Canvas *c)
         if (ui->ha.phase != H5_READY) {
             if (ui->ha.phase == H5_OFFLINE) list[n++] = (Hint){ accept_glyph(ui), "Try now" };
             list[n++] = (Hint){ G_OPTIONS, "Menu" };
-        } else if (!rooms || (ui->zone == Z_TABS && ui->tab >= rooms)) {
-            list[n++] = (Hint){ accept_glyph(ui), "Make a room" };
-            if (rooms) list[n++] = (Hint){ G_LR, "Rooms" };
-            list[n++] = (Hint){ G_OPTIONS, "Menu" };
+        } else if (!rooms) {
+            list[n++] = (Hint){ G_OPTIONS, "Menu: New room" };
+        } else if (ui->zone == Z_TABS && !ct->card_count) {
+            /* an empty room: adding is in the menu */
+            list[n++] = (Hint){ G_OPTIONS, "Add to the room" };
+            list[n++] = (Hint){ G_SQUARE, "Delete room" };
+            list[n++] = (Hint){ G_LR, "Rooms" };
         } else if (ui->zone == Z_TABS) {
             list[n++] = (Hint){ accept_glyph(ui), "Open" };
             list[n++] = (Hint){ G_SQUARE, "Delete room" };
             list[n++] = (Hint){ G_LR, "Rooms" };
             list[n++] = (Hint){ G_OPTIONS, "Menu" };
-        } else if (ui->on_add || !e) {
-            list[n++] = (Hint){ accept_glyph(ui), "Add or take out" };
+        } else if (!e) {
             list[n++] = (Hint){ G_L1R1, "Rooms" };
-            list[n++] = (Hint){ G_OPTIONS, "Menu" };
+            list[n++] = (Hint){ G_OPTIONS, "Menu: add to the room" };
         } else {
             list[n++] = (Hint){ accept_glyph(ui), e->kind == H5_CLIMATE ? "Open" : e->kind == H5_COVER ? "Open / close"
                                                   : e->kind == H5_LOCK ? (strcmp(e->state, "locked") ? "Lock" : "Unlock")
@@ -1985,11 +2037,12 @@ static void menu_screen(H5Ui *ui, H5Canvas *c)
 static void pick_screen(H5Ui *ui, H5Canvas *c)
 {
     const H5Room *room = current_room(ui);
-    char title[120];
+    char title[200];
     snprintf(title, sizeof(title), "Add to %s", room ? room->name : "");
     float x = drawer(ui, c, title);
-    snprintf(title, sizeof(title), "✓ is in %s. By their area in Home Assistant.", room ? room->name : "the room");
-    h5_text(c, &ui->fonts, H5_FACE_SMALL, (int)x + 64, 178, C_DIM, title, 820 - 128, 0);
+    if (ui->pick_query[0]) snprintf(title, sizeof(title), "Searching for “%s”: %d found", ui->pick_query, ui->pick_count);
+    else snprintf(title, sizeof(title), "✓ is in %s. By their area in Home Assistant.", room ? room->name : "the room");
+    h5_text(c, &ui->fonts, H5_FACE_SMALL, (int)x + 64, 178, ui->pick_query[0] ? C_ACCENT_TEXT : C_DIM, title, 820 - 128, 0);
     /* the kinds (L2 / R2), the ones Home Assistant has; scrolled so the one shown fits */
     int shown[FILTERS], count = 0, at = 0;
     float widths[FILTERS];
@@ -2033,9 +2086,16 @@ static void pick_screen(H5Ui *ui, H5Canvas *c)
                    in_room(ui, room, ui->pick[i]) ? "✓" : "", C_GREEN);
     }
     if (!ui->pick_count)
-        h5_text(c, &ui->fonts, H5_FACE_TEXT, (int)x + 72, 320, C_DIM, "Nothing of this kind in Home Assistant.", 0, 0);
-    Hint list[] = { { accept_glyph(ui), "In / out" }, { G_L2R2, "Kind" }, { G_L1R1, "Page" }, { back_glyph(ui), "Done" } };
-    hints(ui, c, (int)x + 64, 1012, list, 4);
+        h5_text(c, &ui->fonts, H5_FACE_TEXT, (int)x + 72, 320, C_DIM,
+                ui->pick_query[0] ? "Nothing matches that. □ clears the search." : "Nothing of this kind in Home Assistant.",
+                820 - 144, 0);
+    Hint list[4];
+    int n = 0;
+    if (ui->pick_count) list[n++] = (Hint){ accept_glyph(ui), "In / out" };
+    list[n++] = ui->pick_query[0] ? (Hint){ G_SQUARE, "Clear search" } : (Hint){ G_TRIANGLE, "Search" };
+    list[n++] = (Hint){ G_L2R2, "Kind" };
+    list[n++] = (Hint){ back_glyph(ui), "Done" };
+    hints(ui, c, (int)x + 64, 1012, list, n);
 }
 
 static void confirm_screen(H5Ui *ui, H5Canvas *c)
@@ -2223,4 +2283,19 @@ const char *h5_ui_picked(const H5Ui *ui)
 {
     if (ui->screen != S_PICK || !ui->pick || ui->pick_at >= ui->pick_count || ui->pick[ui->pick_at] >= ui->ha.count) return "";
     return ui->ha.entities[ui->pick[ui->pick_at]].id;
+}
+
+int h5_ui_found(const H5Ui *ui)
+{
+    return ui->screen == S_PICK ? ui->pick_count : -1;
+}
+
+const char *h5_ui_menu_line(H5Ui *ui)
+{
+    static char label[200];
+    char about[200], value[32];
+    if (ui->screen != S_MENU || !ui->menu_count) return "";
+    menu_text(ui, ui->menu[clampi(ui->menu_at, 0, ui->menu_count - 1)], label, sizeof(label), about, sizeof(about), value,
+              sizeof(value));
+    return label;
 }

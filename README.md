@@ -10,7 +10,7 @@ the lights, switches, blinds, thermostats, scenes and sensors you want; then you
 lights, set their brightness and colour, open the blinds, set the heating and run scenes,
 all with the DualSense: the triggers push back as you dim a light, and the light bar glows
 in the colour of the light you are on. The app is `PPSA11019`, its tile is called **Home5**
-and it sits under **Media**. This is version 1.0.1.
+and it sits under **Media**. This is version 1.0.2.
 
 Home5 is not made by, or connected with, Home Assistant, the Open Home Foundation or Sony.
 
@@ -46,11 +46,15 @@ Home5 is not made by, or connected with, Home Assistant, the Open Home Foundatio
    ```
 
    and choose **Or use a token from home5.txt on a USB drive**. Delete the file afterwards.
-3. Make your first room: press ✕, name it, and choose what goes in it. The list has
-   everything from Home Assistant, by its area there; **L2 / R2** show one kind at a time
-   (lights, switches, blinds, heating, locks, media, scenes, sensors), **✕** puts one in or
-   takes it out (✓ shows what's in). Nothing is put in a room for you.
-4. More rooms come from the **New room** tab after your rooms along the top.
+3. Make your first room: press **Options**, choose **New room**, name it, and choose what
+   goes in it. The list has everything from Home Assistant, by its area there; **△**
+   searches it (a name, an area or an entity id; every word you type has to be there),
+   **□** clears the search, **L2 / R2** show one kind at a time (lights, switches, blinds,
+   heating, locks, media, scenes, sensors), **L1 / R1** go a page at a time, and **✕** puts
+   one in or takes it out (✓ shows what's in). Nothing is put in a room for you.
+4. More rooms come from the same menu (**Options › New room**). To add to a room later, or
+   take something out, press **Options** and choose **Add to the room**. The home screen
+   only has your rooms along the top and what's in them.
 
 | Buttons | |
 | --- | --- |
@@ -60,7 +64,6 @@ Home5 is not made by, or connected with, Home Assistant, the Open Home Foundatio
 | L1 / R1 | the previous or next room |
 | Up, to the rooms along the top | left / right picks a room, ✕ opens it |
 | □ on a room's tab | deletes the room (asked first) |
-| ✕ on a room's last card | add to the room or take out |
 | Left / right on a light's screen | its colour |
 | □ on a light's screen | whether the light bar follows the light |
 | Options | the menu |
@@ -81,11 +84,11 @@ then its scenes and scripts, all as cards; its sensors are shown under them.
 
 | Menu (Options) | |
 | --- | --- |
-| Add to the room or take out | the same list as the room's last card |
+| Add to the room or take out | the list from Home Assistant, with a search (△) |
 | Remove the device from the room | only here on the PS5 |
 | Rename the device, rename the room | the name on this PS5 (a device's empty: Home Assistant's again) |
 | Move the room left or right | the rooms in your order |
-| New room, Delete room | Delete is also □ on the room's tab |
+| New room, Delete room | the only place rooms are made; Delete is also □ on the room's tab |
 | Light bar follows lights | the controller glows in the colour of the light you are on |
 | Remove all rooms | start again with none |
 | About Home5, Sign out | signing out revokes Home5's token in Home Assistant |

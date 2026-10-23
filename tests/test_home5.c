@@ -125,11 +125,13 @@ static void host_log(const char *line)
     if (getenv("H5_TEST_VERBOSE")) fprintf(stderr, "%s\n", line);
 }
 
+/* The UI's clock; skipped ahead to let a toast go before a screenshot for the README. */
+static uint64_t clock_skip;
 static uint64_t host_clock(void)
 {
     struct timespec t;
     clock_gettime(CLOCK_MONOTONIC, &t);
-    return (uint64_t)t.tv_sec * 1000 + (uint64_t)t.tv_nsec / 1000000;
+    return (uint64_t)t.tv_sec * 1000 + (uint64_t)t.tv_nsec / 1000000 + clock_skip;
 }
 
 static int64_t host_time(void) { return (int64_t)time(NULL); }
@@ -502,6 +504,21 @@ static int pick_to(H5Ui *ui, const char *entity)
     return !strcmp(h5_ui_picked(ui), entity);
 }
 
+/* The menu opened (Options) and down to the line that starts with text. */
+static int menu_to(H5Ui *ui, const char *text)
+{
+    frame(ui, H5_KEY_OPTIONS);
+    for (int i = 0; i < 30 && strncmp(h5_ui_menu_line(ui), text, strlen(text)); i++) frame(ui, H5_KEY_DOWN);
+    return !strncmp(h5_ui_menu_line(ui), text, strlen(text));
+}
+
+/* Past the toast's few seconds, and drawn again. */
+static void quiet(H5Ui *ui)
+{
+    clock_skip += 3500;
+    frame(ui, 0);
+}
+
 static void shot(const char *name)
 {
     char file[700];
@@ -582,14 +599,72 @@ static void test_screens(void)
     CHECK(h5_is_file(account), "the account kept");
     shot("04-first-room");
 
-    /* ✕: the first room's name, then straight to what goes in it. */
+    /* No button on the screen for it: ✕ only says where. Options: New room is the menu's first line; the room's name,
+     * then straight to what goes in it. */
     keyboards = 0;
+    frame(ui, H5_KEY_CROSS);
+    CHECK(keyboards == 0 && !strcmp(h5_ui_screen(ui), "home"), "✕ with no rooms opens nothing");
+    frame(ui, H5_KEY_OPTIONS);
+    CHECK(!strcmp(h5_ui_menu_line(ui), "New room"), "the menu starts with New room: %s", h5_ui_menu_line(ui));
     frame(ui, H5_KEY_CROSS);
     CHECK(keyboards == 1 && strstr(asked, "room's name") && asked_kind == H5_TEXT_NAME, "the room's keyboard: %s", asked);
     h5_ui_text(ui, 1, "Living room");
     frame(ui, 0);
     CHECK(!strcmp(h5_ui_screen(ui), "pick") && h5_ui_layout(ui)->room_count == 1, "made, and the picker: %s",
           h5_ui_screen(ui));
+    /* △: a search, any case, spaces at the ends left out; every word somewhere in the name, area or id. */
+    int everything = h5_ui_found(ui);
+    keyboards = 0;
+    frame(ui, H5_KEY_TRIANGLE);
+    CHECK(keyboards == 1 && strstr(asked, "Search") && asked_kind == H5_TEXT_SEARCH, "△: the search's keyboard: %s", asked);
+    h5_ui_text(ui, 1, "  LAMP ");
+    frame(ui, 0);
+    CHECK(h5_ui_found(ui) == 1 && !strcmp(h5_ui_picked(ui), "light.lamp"), "“lamp”: the floor lamp alone (%d)",
+          h5_ui_found(ui));
+    frame(ui, H5_KEY_TRIANGLE);
+    h5_ui_text(ui, 1, "living temp");
+    frame(ui, 0);
+    CHECK(h5_ui_found(ui) == 1 && !strcmp(h5_ui_picked(ui), "sensor.living_temperature"), "“living temp”: %s",
+          h5_ui_picked(ui));
+    frame(ui, H5_KEY_TRIANGLE);
+    /* (the kitchen is the Cookhouse in HA since the client's test) */
+    h5_ui_text(ui, 1, "kettle cookhouse");
+    frame(ui, 0);
+    CHECK(h5_ui_found(ui) == 1 && !strcmp(h5_ui_picked(ui), "switch.kettle"), "“kettle cookhouse”: by its area in HA (%d, %s)",
+          h5_ui_found(ui), h5_ui_picked(ui));
+    frame(ui, H5_KEY_TRIANGLE);
+    h5_ui_text(ui, 1, "light.bed");
+    frame(ui, 0);
+    CHECK(h5_ui_found(ui) == 1 && !strcmp(h5_ui_picked(ui), "light.bedroom"), "by entity id: %s", h5_ui_picked(ui));
+    frame(ui, H5_KEY_TRIANGLE);
+    h5_ui_text(ui, 1, "nothing like this");
+    frame(ui, 0);
+    CHECK(h5_ui_found(ui) == 0 && !h5_ui_picked(ui)[0], "nothing found");
+    frame(ui, H5_KEY_CROSS);
+    CHECK(h5_ui_layout(ui)->item_count == 0, "✕ with nothing found adds nothing");
+    quiet(ui);
+    shot("05a-pick-nothing");
+    /* A cancelled keyboard keeps the search; □ clears it. */
+    frame(ui, H5_KEY_TRIANGLE);
+    h5_ui_text(ui, 0, "");
+    CHECK(h5_ui_found(ui) == 0 && !strcmp(h5_ui_screen(ui), "pick"), "cancelled: still searching");
+    frame(ui, H5_KEY_SQUARE);
+    CHECK(h5_ui_found(ui) == everything, "□: everything again (%d of %d)", h5_ui_found(ui), everything);
+    /* Searching among lights for a switch: all kinds, rather than nothing. */
+    frame(ui, H5_KEY_R2);
+    int lights = h5_ui_found(ui);
+    frame(ui, H5_KEY_TRIANGLE);
+    h5_ui_text(ui, 1, "kettle");
+    frame(ui, 0);
+    CHECK(lights == 3 && !strcmp(h5_ui_picked(ui), "switch.kettle"), "“kettle” with the lights shown: %d, %s", lights,
+          h5_ui_picked(ui));
+    frame(ui, H5_KEY_TRIANGLE);
+    h5_ui_text(ui, 1, "living");
+    frame(ui, 0);
+    quiet(ui);
+    shot("05b-pick-search");
+    frame(ui, H5_KEY_SQUARE);
+    CHECK(h5_ui_found(ui) == everything, "cleared again");
     /* R2: lights only (Bedside; Floor lamp, Living room Ceiling light); the two in the living room in. */
     frame(ui, H5_KEY_R2);
     CHECK(pick_to(ui, "light.ceiling"), "the lights: the ceiling light");
@@ -616,7 +691,7 @@ static void test_screens(void)
     frame(ui, H5_KEY_CROSS);
     frame(ui, H5_KEY_UP);
     frame(ui, H5_KEY_CROSS);
-    frame(ui, 0);
+    quiet(ui);
     shot("05-pick");
     H5Layout *l = h5_ui_layout(ui);
     CHECK(l->item_count == 7 && h5_layout_has(l, l->rooms[0].id, "sensor.living_humidity") &&
@@ -630,20 +705,20 @@ static void test_screens(void)
     CHECK(!strcmp(h5_ui_screen(ui), "home") && h5_ui_view(ui)->room_count == 1 && h5_ui_view(ui)->rooms[0].count == 7,
           "home with the room");
 
-    /* The cards, four across: Ceiling light, Floor lamp, Blinds, Thermostat; Movie night, then adding.
-     * Back from the picker, adding is focused: up to the floor lamp, left to the ceiling light. */
-    frame(ui, H5_KEY_UP);
-    frame(ui, H5_KEY_LEFT);
+    /* The cards, four across: Ceiling light, Floor lamp, Blinds, Thermostat; Movie night (no card that adds: that's
+     * in the menu). Back from the picker, the first card is focused. */
     /* The ceiling light is off (since the client's test): the light bar is the console's; on with ✕, the light
      * bar in its colour; off again. */
     H5Entity *ceiling = h5_ha_entity(h5_ui_ha(ui), "light.ceiling");
-    CHECK(ceiling && !ceiling->on && h5_ui_light_bar(ui) == -1 && h5_ui_triggers(ui), "an off light: the console's light bar");
+    CHECK(ceiling && !ceiling->on && h5_ui_light_bar(ui) == -1 && h5_ui_triggers(ui),
+          "an off light: the console's light bar (%d, %x, %d)", ceiling ? ceiling->on : -1, (unsigned)h5_ui_light_bar(ui),
+          h5_ui_triggers(ui));
     frame(ui, H5_KEY_CROSS);
     end = host_clock() + 3000;
     while (strcmp(h5_ha_entity(h5_ui_ha(ui), "light.ceiling")->state, "on") && host_clock() < end) frame(ui, 0);
     CHECK(!strcmp(h5_ha_entity(h5_ui_ha(ui), "light.ceiling")->state, "on") && h5_ui_light_bar(ui) == 0xffd9a0,
           "on in HA, the light bar warm white: %x", (unsigned)h5_ui_light_bar(ui));
-    frame(ui, 0);
+    quiet(ui);
     shot("06-home-light-on");
     frame(ui, H5_KEY_CROSS);
     end = host_clock() + 3000;
@@ -664,7 +739,7 @@ static void test_screens(void)
     end = host_clock() + 3000;
     while (h5_ha_entity(h5_ui_ha(ui), "light.ceiling")->kelvin != 4000 && host_clock() < end) frame(ui, 0);
     CHECK(h5_ha_entity(h5_ui_ha(ui), "light.ceiling")->kelvin == 4000, "neutral white");
-    frame(ui, 0);
+    quiet(ui);
     shot("07-light");
     frame(ui, H5_KEY_CIRCLE);
     CHECK(!strcmp(h5_ui_screen(ui), "home"), "back from the light");
@@ -693,13 +768,12 @@ static void test_screens(void)
     frame(ui, H5_KEY_LEFT);
     frame(ui, H5_KEY_CROSS);
     frame(ui, H5_KEY_DOWN);
-    frame(ui, 0);
+    quiet(ui);
     shot("08-thermostat");
     frame(ui, H5_KEY_CIRCLE);
     CHECK(!strcmp(h5_ui_screen(ui), "home"), "back home");
-    /* The scene, under the first row (down goes to the last card there is, adding; left to it): run with ✕. */
+    /* The scene, under the first row (down from the thermostat goes to the last card there is): run with ✕. */
     frame(ui, H5_KEY_DOWN);
-    frame(ui, H5_KEY_LEFT);
     frame(ui, H5_KEY_CROSS);
     end = host_clock() + 3000;
     while (strcmp(h5_ha_entity(h5_ui_ha(ui), "scene.movie")->state, "2026-10-23T09:00:00+00:00") && host_clock() < end)
@@ -708,13 +782,17 @@ static void test_screens(void)
     frame(ui, 0);
     shot("09-home-scene");
 
-    /* A second room from the "New room" tab: up to the tabs, right past the living room. */
+    /* No "New room" tab after the rooms: up to the tabs, right stays on the living room. */
     frame(ui, H5_KEY_UP);
     frame(ui, H5_KEY_UP);
     frame(ui, H5_KEY_RIGHT);
     keyboards = 0;
     frame(ui, H5_KEY_CROSS);
-    CHECK(keyboards == 1 && strstr(asked, "room's name"), "the New room tab: %d", keyboards);
+    CHECK(keyboards == 0 && !strcmp(h5_ui_screen(ui), "home"), "nothing past the last room: %d", keyboards);
+    /* A second room from the menu. */
+    CHECK(menu_to(ui, "New room"), "Options › New room");
+    frame(ui, H5_KEY_CROSS);
+    CHECK(keyboards == 1 && strstr(asked, "room's name"), "the room's keyboard from the menu: %d", keyboards);
     h5_ui_text(ui, 1, "Bedroom");
     frame(ui, 0);
     CHECK(!strcmp(h5_ui_screen(ui), "pick"), "its picker");
@@ -731,13 +809,14 @@ static void test_screens(void)
           "the kettle still in its own area in HA");
     frame(ui, 0);
     shot("10-bedroom");
-    /* Its menu: Add or take out, Rename, Move left, New room, Delete, …; moved left. */
+    /* Its menu, with the bedside light focused: Add or take out, Remove the light, Rename it, Rename the room, Move left,
+     * New room, Delete, …; moved left. */
     frame(ui, H5_KEY_OPTIONS);
     CHECK(!strcmp(h5_ui_screen(ui), "menu"), "the menu");
     frame(ui, 0);
     shot("11-menu");
-    frame(ui, H5_KEY_DOWN);
-    frame(ui, H5_KEY_DOWN);
+    for (int i = 0; i < 4; i++) frame(ui, H5_KEY_DOWN);
+    CHECK(!strcmp(h5_ui_menu_line(ui), "Move Bedroom left"), "fifth: %s", h5_ui_menu_line(ui));
     frame(ui, H5_KEY_CROSS);
     CHECK(!strcmp(l->rooms[0].name, "Bedroom") && !strcmp(h5_ui_view(ui)->rooms[0].name, "Bedroom"), "moved left: %s",
           l->rooms[0].name);
@@ -749,15 +828,23 @@ static void test_screens(void)
     frame(ui, H5_KEY_CROSS);
     CHECK(!h5_layout_has(l, l->rooms[1].id, "light.lamp") && h5_layout_has(l, l->rooms[1].id, "light.ceiling"),
           "the floor lamp out of the living room");
-    /* A third room from the tabs, then deleted from its tab with □: asked first, ○ keeps it, ✕ deletes it. */
-    frame(ui, H5_KEY_UP);
-    frame(ui, H5_KEY_RIGHT);
+    /* A third room from the menu, then deleted from its tab with □: asked first, ○ keeps it, ✕ deletes it. */
+    CHECK(menu_to(ui, "New room"), "Options › New room again");
     frame(ui, H5_KEY_CROSS);
     h5_ui_text(ui, 1, "Spare room");
     frame(ui, H5_KEY_CIRCLE);
     CHECK(l->room_count == 3 && !strcmp(l->rooms[2].name, "Spare room"), "a third room: %d", l->room_count);
+    /* Empty: no card to add with; ✕ and ↓ only say where adding is (the menu's first line). */
+    frame(ui, H5_KEY_DOWN);
+    frame(ui, H5_KEY_CROSS);
+    CHECK(!strcmp(h5_ui_screen(ui), "home"), "✕ in an empty room opens nothing: %s", h5_ui_screen(ui));
+    frame(ui, H5_KEY_OPTIONS);
+    frame(ui, H5_KEY_CROSS);
+    CHECK(!strcmp(h5_ui_screen(ui), "pick"), "Options › Add to the room: the picker (%s)", h5_ui_screen(ui));
+    frame(ui, H5_KEY_CIRCLE);
+    CHECK(!strcmp(h5_ui_screen(ui), "home") && h5_ui_view(ui)->rooms[2].count == 0, "back, still empty");
     frame(ui, H5_KEY_UP);
-    frame(ui, 0);
+    quiet(ui);
     shot("12-tab-focused");
     frame(ui, H5_KEY_SQUARE);
     CHECK(!strcmp(h5_ui_screen(ui), "confirm"), "□ on its tab: asked first (%s)", h5_ui_screen(ui));
