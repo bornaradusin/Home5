@@ -1,6 +1,9 @@
+
 # Home5
 
-<p align="center"><img src="art/icon0.png" width="200" alt="Home5's icon"></p>
+<p align="center">
+  <img src="art/icon0.png" width="200" alt="Home5 icon">
+</p>
 
 Home Assistant on a PS5 that runs homebrew. You make your rooms on the PS5 and put in them
 the lights, switches, blinds, thermostats, scenes and sensors you want; then you switch
@@ -11,9 +14,17 @@ and it sits under **Media**. This is version 1.0.1.
 
 Home5 is not made by, or connected with, Home Assistant, the Open Home Foundation or Sony.
 
+<p align="right">
+  <a href="https://www.buymeacoffee.com/bornaradusin">
+    <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png"
+         alt="Buy Me a Coffee"
+         width="140">
+  </a>
+</p>
+
 <p align="center">
-<img src="docs/home.png" width="49%" alt="A room with its lights, blinds, thermostat, a scene and sensors">
-<img src="docs/light.png" width="49%" alt="A light: brightness, colour and the light bar">
+  <img src="docs/home.png" width="49%" alt="A room with its lights, blinds, thermostat, a scene and sensors">
+  <img src="docs/light.png" width="49%" alt="A light: brightness, colour and the light bar">
 </p>
 
 ## Using it
@@ -29,7 +40,7 @@ Home5 is not made by, or connected with, Home Assistant, the Open Home Foundatio
    Or sign in with a long-lived access token (Home Assistant: your profile › Security):
    put a file `home5.txt` at the top of a USB drive with
 
-   ```
+   ```text
    address = http://192.168.1.20:8123
    token = eyJhbGciOi…
    ```
@@ -58,8 +69,8 @@ Home5 is not made by, or connected with, Home Assistant, the Open Home Foundatio
 Locks ask before they lock or unlock. A media player plays or pauses.
 
 <p align="center">
-<img src="docs/pick.png" width="49%" alt="Choosing what goes in a room">
-<img src="docs/thermostat.png" width="49%" alt="A thermostat">
+  <img src="docs/pick.png" width="49%" alt="Choosing what goes in a room">
+  <img src="docs/thermostat.png" width="49%" alt="A thermostat">
 </p>
 
 ## Rooms on this PS5
@@ -103,7 +114,7 @@ at the top of a USB drive and start Home5: it writes its log into that file.
 On Linux (Debian 13 or Ubuntu 24.04) with git, curl, wget, unzip, zip, tar, xz, make,
 clang-18, llvm-18 and python3 with Pillow and NumPy:
 
-```
+```bash
 bash tests/test.sh   # the host tests: the network, Home Assistant's API (a fake one), the rooms, the screens
 bash tools/build.sh  # the app and its packages, into release/
 ```
