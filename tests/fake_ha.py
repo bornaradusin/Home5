@@ -209,7 +209,9 @@ def apply_call(domain, service, entity_id, data):
         a["current_position"] = 0 if s["state"] == "closed" else 100
     elif domain == "lock" and service in ("lock", "unlock"):
         s["state"] = "locked" if service == "lock" else "unlocked"
-    elif domain in ("scene", "script") and service == "turn_on":
+    elif domain == "scene" and service == "turn_on":
+        s["state"] = "2026-10-23T09:00:00+00:00"   # when it was last activated, as HA keeps it
+    elif domain == "script" and service == "turn_on":
         pass
     else:
         return None

@@ -2,16 +2,17 @@
 
 <p align="center"><img src="art/icon0.png" width="200" alt="Home5's icon"></p>
 
-Home Assistant on a PS5 that runs homebrew. Home5 shows your home room by room and lets you
-switch lights, set their brightness and colour, open the blinds, set the heating, run scenes
-and more, all with the DualSense: the triggers push back as you dim a light, and the light
-bar glows in the colour of the light you are on. The app is `PPSA11019`, its tile is called
-**Home5** and it sits under **Media**. This is version 1.0.0.
+Home Assistant on a PS5 that runs homebrew. You make your rooms on the PS5 and put in them
+the lights, switches, blinds, thermostats, scenes and sensors you want; then you switch
+lights, set their brightness and colour, open the blinds, set the heating and run scenes,
+all with the DualSense: the triggers push back as you dim a light, and the light bar glows
+in the colour of the light you are on. The app is `PPSA11019`, its tile is called **Home5**
+and it sits under **Media**. This is version 1.0.1.
 
 Home5 is not made by, or connected with, Home Assistant, the Open Home Foundation or Sony.
 
 <p align="center">
-<img src="docs/home.png" width="49%" alt="A room with its lights, blinds and thermostat">
+<img src="docs/home.png" width="49%" alt="A room with its lights, blinds, thermostat, a scene and sensors">
 <img src="docs/light.png" width="49%" alt="A light: brightness, colour and the light bar">
 </p>
 
@@ -34,16 +35,21 @@ Home5 is not made by, or connected with, Home Assistant, the Open Home Foundatio
    ```
 
    and choose **Or use a token from home5.txt on a USB drive**. Delete the file afterwards.
-3. Your rooms are Home Assistant's areas, with the devices Home Assistant has in them.
-   Devices in no area are under **Other devices**. A room's scenes and scripts are under
-   the list of rooms.
+3. Make your first room: press ✕, name it, and choose what goes in it. The list has
+   everything from Home Assistant, by its area there; **L2 / R2** show one kind at a time
+   (lights, switches, blinds, heating, locks, media, scenes, sensors), **✕** puts one in or
+   takes it out (✓ shows what's in). Nothing is put in a room for you.
+4. More rooms come from the **New room** tab after your rooms along the top.
 
 | Buttons | |
 | --- | --- |
-| ✕ | switch the device on or off, open, run (○ if the console is set to confirm with ○) |
+| ✕ | switch the device on or off, open, run a scene (○ if the console is set to confirm with ○) |
 | L2 / R2 | dim and brighten a light, the temperature, a blind's position, a fan's speed |
 | △ | a light's or a thermostat's own screen |
 | L1 / R1 | the previous or next room |
+| Up, to the rooms along the top | left / right picks a room, ✕ opens it |
+| □ on a room's tab | deletes the room (asked first) |
+| ✕ on a room's last card | add to the room or take out |
 | Left / right on a light's screen | its colour |
 | □ on a light's screen | whether the light bar follows the light |
 | Options | the menu |
@@ -52,27 +58,30 @@ Home5 is not made by, or connected with, Home Assistant, the Open Home Foundatio
 Locks ask before they lock or unlock. A media player plays or pauses.
 
 <p align="center">
+<img src="docs/pick.png" width="49%" alt="Choosing what goes in a room">
 <img src="docs/thermostat.png" width="49%" alt="A thermostat">
-<img src="docs/menu.png" width="49%" alt="The menu">
 </p>
 
 ## Rooms on this PS5
 
-Everything you change in the menu is kept on the PS5. Home Assistant is never changed by it.
+Your rooms are your own and are kept on the PS5: Home Assistant is never changed by them. A
+device can be in more than one room. A room's lights, switches and the rest come first,
+then its scenes and scripts, all as cards; its sensors are shown under them.
 
-| Menu | |
+| Menu (Options) | |
 | --- | --- |
-| Add a device to this room | any device from Home Assistant; it stays in its own room too |
-| Remove it from this room | only here on the PS5 |
-| Rename the device, rename the room | the name on this PS5 (empty: Home Assistant's again) |
-| Move the room up or down | the rooms in your order |
-| New room, Delete room | rooms of your own |
+| Add to the room or take out | the same list as the room's last card |
+| Remove the device from the room | only here on the PS5 |
+| Rename the device, rename the room | the name on this PS5 (a device's empty: Home Assistant's again) |
+| Move the room left or right | the rooms in your order |
+| New room, Delete room | Delete is also □ on the room's tab |
 | Light bar follows lights | the controller glows in the colour of the light you are on |
-| Reset rooms | back to Home Assistant's rooms, names and order |
+| Remove all rooms | start again with none |
 | About Home5, Sign out | signing out revokes Home5's token in Home Assistant |
 
-When Home Assistant renames an area or moves a device, Home5 shows it at once (your own
-changes stay). Home Assistant's notifications show as the console's notifications.
+Home Assistant's notifications show as the console's notifications. Coming from 1.0.0, the
+rooms you made there stay, with what you added to them; Home Assistant's areas are no
+longer rooms by themselves.
 
 ## What it can do
 

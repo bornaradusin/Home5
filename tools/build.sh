@@ -108,23 +108,18 @@ step_app() {
     # The boilerplate's own pictures and sound go; Home5's come in.
     rm -f "$bp"/sce_sys/*.png "$bp"/sce_sys/*.dds "$bp"/sce_sys/snd0.at9
     python3 "$here/art/make-art.py" "$bp/sce_sys"
-    TITLE_ID=$TITLE_ID APP_NAME=Home5 APP_CATEGORY=$APP_CATEGORY \
-        bash "$bp/tools/init-project.sh" "$bp/sce_sys/param.json"
-    python3 - "$bp/sce_sys/param.json" "$version" <<'PY'
+    # Home5's own param.json (sce_sys/), checked: its title, Media, and the version in src/h5.h.
+    cp "$here/sce_sys/param.json" "$bp/sce_sys/param.json"
+    python3 - "$bp/sce_sys/param.json" "$version" "$TITLE_ID" <<'PY'
 import json, sys
-path, version = sys.argv[1], sys.argv[2]
+path, version, title_id = sys.argv[1:4]
 param = json.load(open(path, encoding="utf-8"))
 major, minor, patch = (int(n) for n in version.split("."))
-param["contentVersion"] = f"{major:02d}.{minor:03d}.{patch:03d}"
-param["downloadDataSize"] = 256         # /download0: the sign-in, the rooms and the settings
-# As the Media apps known to start on the PS5 have them (ProsperoRadio, ProsperoTV): no
-# initial-user logout, the PS button doesn't suspend the app, HDCP 2.2, text to speech, HDR.
-param["attribute"] = 1644167168
-param["attribute3"] = 1048576
+want = f"{major:02d}.{minor:03d}.{patch:03d}"
+assert param["titleId"] == title_id, f"sce_sys/param.json: titleId {param['titleId']}, not {title_id}"
+assert param["contentVersion"] == want, f"sce_sys/param.json: contentVersion {param['contentVersion']}, src/h5.h says {want}"
 assert param["applicationCategoryType"] == 65536 and param["contentBadgeType"] == 2 and "gameIntent" not in param, \
-    "Home5 belongs under Media"
-json.dump(param, open(path, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
-open(path, "a").write("\n")
+    "sce_sys/param.json: Home5 belongs under Media"
 print(json.dumps(param, indent=2))
 PY
 }

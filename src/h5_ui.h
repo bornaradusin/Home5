@@ -61,5 +61,7 @@ const char *h5_ui_screen(const H5Ui *ui);
 H5Ha *h5_ui_ha(H5Ui *ui);
 const H5View *h5_ui_view(const H5Ui *ui);
 H5Layout *h5_ui_layout(H5Ui *ui);
+/* The picker's focused entity, or "". */
+const char *h5_ui_picked(const H5Ui *ui);
 
 #endif

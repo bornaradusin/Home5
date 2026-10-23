@@ -386,7 +386,7 @@ static void test_layout(void)
     H5Ha ha;
     H5Layout *layout = calloc(1, sizeof(H5Layout)), *back = calloc(1, sizeof(H5Layout));
     H5View view;
-    char address[100], path[600], id[64];
+    char address[100], path[600], living[64], bedroom[64];
     url(address, sizeof(address), 0, plain_port);
     snprintf(path, sizeof(path), "%s/layout.txt", work);
 
@@ -395,45 +395,68 @@ static void test_layout(void)
     CHECK(!h5_ha_connect(&ha) && !until_ready(&ha), "connected for the layout");
     h5_layout_reset(layout);
     h5_layout_view(layout, &ha, &view);
-    CHECK(view.room_count == 5 && !strcmp(view.rooms[0].name, "Bedroom") && room_index(&view, "") == 4 &&
-              room_has(&ha, &view, "living_room", "light.ceiling") && !room_has(&ha, &view, "living_room", "light.hidden") &&
-              room_has(&ha, &view, "", "lock.front_door"),
-          "HA's rooms by name, then devices in no area: %d %s", view.room_count, view.room_count ? view.rooms[0].name : "");
-    int living = room_index(&view, "living_room");
-    CHECK(living >= 0 && ha.entities[view.items[view.rooms[living].first]].kind == H5_LIGHT, "lights first");
+    CHECK(view.room_count == 0 && ha.area_count == 4, "no rooms to start with, whatever HA's areas are");
     h5_view_free(&view);
 
-    /* Added, removed, renamed, a room made here, moved; kept in the file. */
-    h5_layout_add(layout, "bedroom", "switch.kettle");
-    h5_layout_remove(layout, "living_room", "cover.blinds", 0);
+    /* A room made, its devices, a scene and a sensor put in; one HA doesn't have is kept, unshown. */
+    CHECK(!h5_layout_new_room(layout, "Living room", living, sizeof(living)) && !strcmp(living, "ps5-1"), "a room");
+    CHECK(h5_layout_new_room(layout, "", bedroom, sizeof(bedroom)), "a room needs a name");
+    h5_layout_add(layout, living, "sensor.living_humidity");
+    h5_layout_add(layout, living, "scene.movie");
+    h5_layout_add(layout, living, "light.lamp");
+    h5_layout_add(layout, living, "light.ceiling");
+    h5_layout_add(layout, living, "light.gone");
+    h5_layout_add(layout, living, "light.ceiling");
+    CHECK(layout->item_count == 5 && h5_layout_add(layout, "ps5-99", "light.lamp"), "once each, and only into a room");
+    h5_layout_view(layout, &ha, &view);
+    CHECK(view.room_count == 1 && view.rooms[0].count == 4 && room_has(&ha, &view, living, "light.ceiling") &&
+              !room_has(&ha, &view, living, "light.gone"), "what HA has: %d", view.room_count ? view.rooms[0].count : -1);
+    const char *order[] = { "light.ceiling", "light.lamp", "scene.movie", "sensor.living_humidity" };
+    int sorted = view.room_count == 1;
+    for (int i = 0; sorted && i < 4; i++) sorted = !strcmp(ha.entities[view.items[view.rooms[0].first + i]].id, order[i]);
+    CHECK(sorted, "lights first (Ceiling light, Floor lamp), then the scene, then the sensor");
+    h5_view_free(&view);
+
+    /* A second room; the kettle in both; renamed; moved left; kept in the file. */
+    h5_layout_new_room(layout, "Bedroom", bedroom, sizeof(bedroom));
+    h5_layout_add(layout, bedroom, "light.bedroom");
+    h5_layout_add(layout, bedroom, "switch.kettle");
+    h5_layout_add(layout, living, "switch.kettle");
     h5_layout_rename(layout, "light.ceiling", "Big light");
-    h5_layout_rename(layout, "living_room", "Lounge");
-    CHECK(!h5_layout_new_room(layout, "Gaming corner", id, sizeof(id)) && !strcmp(id, "ps5-1"), "a room made here");
-    h5_layout_add(layout, id, "light.lamp");
+    h5_layout_rename(layout, living, "Lounge");
+    h5_layout_rename(layout, living, "");
+    h5_layout_move_room(layout, bedroom, -1);
+    h5_layout_move_room(layout, bedroom, -1);
     h5_layout_view(layout, &ha, &view);
-    CHECK(room_has(&ha, &view, "bedroom", "switch.kettle") && room_has(&ha, &view, "kitchen", "switch.kettle") &&
-              !room_has(&ha, &view, "living_room", "cover.blinds") && room_has(&ha, &view, "ps5-1", "light.lamp") &&
-              room_has(&ha, &view, "living_room", "light.lamp"),
-          "added to a room (and still in HA's), removed from one");
-    CHECK(!strcmp(view.rooms[room_index(&view, "living_room")].name, "Lounge") &&
-              !strcmp(h5_layout_name(layout, "light.ceiling", "x"), "Big light"), "renamed");
-    CHECK(room_index(&view, "ps5-1") == 4, "made here: after HA's rooms");
-    h5_layout_move_room(layout, &view, "ps5-1", -1);
+    CHECK(view.room_count == 2 && !strcmp(view.rooms[0].id, bedroom) && !strcmp(view.rooms[1].name, "Lounge") &&
+              room_has(&ha, &view, bedroom, "switch.kettle") && room_has(&ha, &view, living, "switch.kettle"),
+          "moved left, renamed (never to nothing), the kettle in two rooms");
+    CHECK(!strcmp(h5_layout_name(layout, "light.ceiling", "x"), "Big light"), "a device renamed");
     h5_view_free(&view);
-    h5_layout_view(layout, &ha, &view);
-    CHECK(room_index(&view, "ps5-1") == 3, "moved up");
-    CHECK(!h5_layout_save(layout, path) && !h5_layout_load(back, path) && back->add_count == 2 && back->remove_count == 1 &&
-              back->name_count == 2 && back->room_count == 1 && back->order_count == 6 && back->next_room == 2,
-          "kept in the file");
-    h5_view_free(&view);
-    h5_layout_add(layout, "living_room", "cover.blinds");
-    CHECK(layout->remove_count == 0 && layout->add_count == 2, "putting one back undoes its removal");
-    h5_layout_delete_room(layout, "ps5-1");
-    h5_layout_view(layout, &ha, &view);
-    CHECK(room_index(&view, "ps5-1") < 0 && layout->add_count == 1 && room_index(&view, "garage") >= 0, "a room deleted");
-    h5_view_free(&view);
+    CHECK(!h5_layout_save(layout, path) && !h5_layout_load(back, path) && back->room_count == 2 &&
+              !strcmp(back->rooms[0].id, bedroom) && back->item_count == 8 && back->name_count == 1 && back->next_room == 3,
+          "kept in the file: %d rooms, %d items", back->room_count, back->item_count);
+    h5_layout_remove(layout, living, "switch.kettle");
+    CHECK(!h5_layout_has(layout, living, "switch.kettle") && h5_layout_has(layout, bedroom, "switch.kettle"), "taken out of one");
+    h5_layout_delete_room(layout, bedroom);
+    CHECK(layout->room_count == 1 && !h5_layout_has(layout, bedroom, "light.bedroom") && layout->item_count == 5,
+          "a room deleted, with what was in it");
     h5_layout_rename(layout, "light.ceiling", "");
     CHECK(!strcmp(h5_layout_name(layout, "light.ceiling", "HA"), "HA"), "HA's name back");
+
+    /* 1.0.0's file: its rooms made on the PS5, in its order, with what was added to them; HA's areas go. */
+    const char *old =
+        "# Home5's rooms on this PS5\n"
+        "room = ps5-3 | Gaming corner\nroom = ps5-1 | Den\n"
+        "order = living_room\norder = ps5-1\norder = -\norder = ps5-3\n"
+        "add = ps5-3 | light.lamp\nadd = bedroom | switch.kettle\nremove = kitchen | sensor.x\n"
+        "name = light.ceiling | Big light\nname = living_room | Lounge\nname = | Elsewhere\n";
+    h5_write_file(path, old, strlen(old));
+    CHECK(!h5_layout_load(back, path) && back->room_count == 2 && !strcmp(back->rooms[0].name, "Den") &&
+              !strcmp(back->rooms[1].name, "Gaming corner") && back->item_count == 1 &&
+              !strcmp(back->items[0].entity, "light.lamp") && back->name_count == 1 && back->next_room == 4,
+          "1.0.0's layout: %d rooms (%s first), %d items, %d names", back->room_count,
+          back->room_count ? back->rooms[0].name : "", back->item_count, back->name_count);
     h5_ha_free(&ha);
     free(layout);
     free(back);
@@ -470,6 +493,13 @@ static int until_screen(H5Ui *ui, const char *name)
         usleep(10000);
     }
     return strcmp(h5_ui_screen(ui), name) ? -1 : 0;
+}
+
+/* Down the picker until entity is focused. */
+static int pick_to(H5Ui *ui, const char *entity)
+{
+    for (int i = 0; i < 300 && strcmp(h5_ui_picked(ui), entity); i++) frame(ui, H5_KEY_DOWN);
+    return !strcmp(h5_ui_picked(ui), entity);
 }
 
 static void shot(const char *name)
@@ -545,19 +575,67 @@ static void test_screens(void)
     uint64_t end = host_clock() + 8000;
     while (h5_ui_ha(ui)->phase != H5_READY && host_clock() < end) frame(ui, 0);
     frame(ui, 0);
-    CHECK(h5_ui_ha(ui)->phase == H5_READY && h5_ui_view(ui)->room_count == 5, "the rooms: %d", h5_ui_view(ui)->room_count);
+    CHECK(h5_ui_ha(ui)->phase == H5_READY && h5_ui_view(ui)->room_count == 0, "no rooms of HA's own: %d",
+          h5_ui_view(ui)->room_count);
     char account[700];
     snprintf(account, sizeof(account), "%s/account.txt", data);
     CHECK(h5_is_file(account), "the account kept");
+    shot("04-first-room");
 
-    /* Rooms by name: Bedroom, Cookhouse (renamed earlier), Garage, Living room, Other devices. */
-    frame(ui, H5_KEY_R1);
-    frame(ui, H5_KEY_R1);
-    frame(ui, H5_KEY_R1);
+    /* ✕: the first room's name, then straight to what goes in it. */
+    keyboards = 0;
+    frame(ui, H5_KEY_CROSS);
+    CHECK(keyboards == 1 && strstr(asked, "room's name") && asked_kind == H5_TEXT_NAME, "the room's keyboard: %s", asked);
+    h5_ui_text(ui, 1, "Living room");
     frame(ui, 0);
-    shot("04-home-living-room");
-    /* Its cards: Ceiling light, Floor lamp, Blinds, Thermostat. The ceiling light is off (since the client's
-     * test): the light bar is the console's; on with ✕, the light bar in its colour; off again. */
+    CHECK(!strcmp(h5_ui_screen(ui), "pick") && h5_ui_layout(ui)->room_count == 1, "made, and the picker: %s",
+          h5_ui_screen(ui));
+    /* R2: lights only (Bedside; Floor lamp, Living room Ceiling light); the two in the living room in. */
+    frame(ui, H5_KEY_R2);
+    CHECK(pick_to(ui, "light.ceiling"), "the lights: the ceiling light");
+    frame(ui, H5_KEY_CROSS);
+    frame(ui, H5_KEY_UP);
+    CHECK(!strcmp(h5_ui_picked(ui), "light.lamp"), "then the floor lamp: %s", h5_ui_picked(ui));
+    frame(ui, H5_KEY_CROSS);
+    /* Switches, then blinds, heating: in; locks; no media (skipped); scenes; sensors. */
+    frame(ui, H5_KEY_R2);
+    CHECK(!strcmp(h5_ui_picked(ui), "switch.kettle"), "the switches: %s", h5_ui_picked(ui));
+    frame(ui, H5_KEY_R2);
+    CHECK(!strcmp(h5_ui_picked(ui), "cover.blinds"), "the blinds: %s", h5_ui_picked(ui));
+    frame(ui, H5_KEY_CROSS);
+    frame(ui, H5_KEY_R2);
+    CHECK(!strcmp(h5_ui_picked(ui), "climate.living"), "the heating: %s", h5_ui_picked(ui));
+    frame(ui, H5_KEY_CROSS);
+    frame(ui, H5_KEY_R2);
+    CHECK(!strcmp(h5_ui_picked(ui), "lock.front_door"), "the locks: %s", h5_ui_picked(ui));
+    frame(ui, H5_KEY_R2);
+    CHECK(pick_to(ui, "scene.movie"), "the scenes (no media between)");
+    frame(ui, H5_KEY_CROSS);
+    frame(ui, H5_KEY_R2);
+    CHECK(pick_to(ui, "sensor.living_temperature"), "the sensors");
+    frame(ui, H5_KEY_CROSS);
+    frame(ui, H5_KEY_UP);
+    frame(ui, H5_KEY_CROSS);
+    frame(ui, 0);
+    shot("05-pick");
+    H5Layout *l = h5_ui_layout(ui);
+    CHECK(l->item_count == 7 && h5_layout_has(l, l->rooms[0].id, "sensor.living_humidity") &&
+              h5_layout_has(l, l->rooms[0].id, "scene.movie") && !h5_layout_has(l, l->rooms[0].id, "switch.kettle"),
+          "seven things in the living room: %d", l->item_count);
+    /* Taken out again with ✕, and back in. */
+    frame(ui, H5_KEY_CROSS);
+    CHECK(l->item_count == 6, "out again");
+    frame(ui, H5_KEY_CROSS);
+    frame(ui, H5_KEY_CIRCLE);
+    CHECK(!strcmp(h5_ui_screen(ui), "home") && h5_ui_view(ui)->room_count == 1 && h5_ui_view(ui)->rooms[0].count == 7,
+          "home with the room");
+
+    /* The cards, four across: Ceiling light, Floor lamp, Blinds, Thermostat; Movie night, then adding.
+     * Back from the picker, adding is focused: up to the floor lamp, left to the ceiling light. */
+    frame(ui, H5_KEY_UP);
+    frame(ui, H5_KEY_LEFT);
+    /* The ceiling light is off (since the client's test): the light bar is the console's; on with ✕, the light
+     * bar in its colour; off again. */
     H5Entity *ceiling = h5_ha_entity(h5_ui_ha(ui), "light.ceiling");
     CHECK(ceiling && !ceiling->on && h5_ui_light_bar(ui) == -1 && h5_ui_triggers(ui), "an off light: the console's light bar");
     frame(ui, H5_KEY_CROSS);
@@ -566,7 +644,7 @@ static void test_screens(void)
     CHECK(!strcmp(h5_ha_entity(h5_ui_ha(ui), "light.ceiling")->state, "on") && h5_ui_light_bar(ui) == 0xffd9a0,
           "on in HA, the light bar warm white: %x", (unsigned)h5_ui_light_bar(ui));
     frame(ui, 0);
-    shot("04b-home-light-on");
+    shot("06-home-light-on");
     frame(ui, H5_KEY_CROSS);
     end = host_clock() + 3000;
     while (strcmp(h5_ha_entity(h5_ui_ha(ui), "light.ceiling")->state, "off") && host_clock() < end) frame(ui, 0);
@@ -587,7 +665,7 @@ static void test_screens(void)
     while (h5_ha_entity(h5_ui_ha(ui), "light.ceiling")->kelvin != 4000 && host_clock() < end) frame(ui, 0);
     CHECK(h5_ha_entity(h5_ui_ha(ui), "light.ceiling")->kelvin == 4000, "neutral white");
     frame(ui, 0);
-    shot("05-light");
+    shot("07-light");
     frame(ui, H5_KEY_CIRCLE);
     CHECK(!strcmp(h5_ui_screen(ui), "home"), "back from the light");
     /* The blinds: L2 closes them a step. */
@@ -598,10 +676,8 @@ static void test_screens(void)
     end = host_clock() + 3000;
     while (h5_ha_entity(h5_ui_ha(ui), "cover.blinds")->position != position - 10 && host_clock() < end) frame(ui, 0);
     CHECK(h5_ha_entity(h5_ui_ha(ui), "cover.blinds")->position == position - 10, "blinds down a step");
-    frame(ui, 0);
-    shot("06-home-blinds");
-    /* The thermostat (the next row): its screen, half a degree up, cooling, heating again. */
-    frame(ui, H5_KEY_DOWN);
+    /* The thermostat (next to them): its screen, half a degree up, cooling, heating again. */
+    frame(ui, H5_KEY_RIGHT);
     frame(ui, H5_KEY_CROSS);
     CHECK(!strcmp(h5_ui_screen(ui), "climate"), "the thermostat's screen: %s", h5_ui_screen(ui));
     float target = h5_ha_entity(h5_ui_ha(ui), "climate.living")->target;
@@ -618,63 +694,101 @@ static void test_screens(void)
     frame(ui, H5_KEY_CROSS);
     frame(ui, H5_KEY_DOWN);
     frame(ui, 0);
-    shot("07-thermostat");
+    shot("08-thermostat");
     frame(ui, H5_KEY_CIRCLE);
     CHECK(!strcmp(h5_ui_screen(ui), "home"), "back home");
+    /* The scene, under the first row (down goes to the last card there is, adding; left to it): run with ✕. */
+    frame(ui, H5_KEY_DOWN);
+    frame(ui, H5_KEY_LEFT);
+    frame(ui, H5_KEY_CROSS);
+    end = host_clock() + 3000;
+    while (strcmp(h5_ha_entity(h5_ui_ha(ui), "scene.movie")->state, "2026-10-23T09:00:00+00:00") && host_clock() < end)
+        frame(ui, 0);
+    CHECK(!strcmp(h5_ha_entity(h5_ui_ha(ui), "scene.movie")->state, "2026-10-23T09:00:00+00:00"), "the scene run");
+    frame(ui, 0);
+    shot("09-home-scene");
 
-    /* The Bedroom's menu: Add, Remove, Rename (device), Rename (room), Move down, New room, … */
-    frame(ui, H5_KEY_L1);
-    frame(ui, H5_KEY_L1);
-    frame(ui, H5_KEY_L1);
+    /* A second room from the "New room" tab: up to the tabs, right past the living room. */
+    frame(ui, H5_KEY_UP);
+    frame(ui, H5_KEY_UP);
+    frame(ui, H5_KEY_RIGHT);
+    keyboards = 0;
+    frame(ui, H5_KEY_CROSS);
+    CHECK(keyboards == 1 && strstr(asked, "room's name"), "the New room tab: %d", keyboards);
+    h5_ui_text(ui, 1, "Bedroom");
+    frame(ui, 0);
+    CHECK(!strcmp(h5_ui_screen(ui), "pick"), "its picker");
+    frame(ui, H5_KEY_R2);
+    CHECK(!strcmp(h5_ui_picked(ui), "light.bedroom"), "the bedside light first: %s", h5_ui_picked(ui));
+    frame(ui, H5_KEY_CROSS);
+    frame(ui, H5_KEY_R2);
+    frame(ui, H5_KEY_CROSS);
+    frame(ui, H5_KEY_CIRCLE);
+    CHECK(l->room_count == 2 && h5_layout_has(l, l->rooms[1].id, "switch.kettle") &&
+              h5_layout_has(l, l->rooms[1].id, "light.bedroom") && !strcmp(h5_ui_view(ui)->rooms[1].name, "Bedroom"),
+          "the bedroom with the bedside light and the kettle");
+    CHECK(h5_ha_entity(h5_ui_ha(ui), "switch.kettle") && !strcmp(h5_ha_entity(h5_ui_ha(ui), "switch.kettle")->area, "kitchen"),
+          "the kettle still in its own area in HA");
+    frame(ui, 0);
+    shot("10-bedroom");
+    /* Its menu: Add or take out, Rename, Move left, New room, Delete, …; moved left. */
     frame(ui, H5_KEY_OPTIONS);
     CHECK(!strcmp(h5_ui_screen(ui), "menu"), "the menu");
     frame(ui, 0);
-    shot("08-menu");
-    frame(ui, H5_KEY_CROSS);
-    CHECK(!strcmp(h5_ui_screen(ui), "pick"), "the picker");
-    /* By HA's rooms: Bedside (Bedroom), then the Kettle (Cookhouse). */
+    shot("11-menu");
+    frame(ui, H5_KEY_DOWN);
     frame(ui, H5_KEY_DOWN);
     frame(ui, H5_KEY_CROSS);
-    frame(ui, 0);
-    shot("09-pick");
-    H5Layout *l = h5_ui_layout(ui);
-    CHECK(l->add_count == 1 && !strcmp(l->adds[0].entity, "switch.kettle") && !strcmp(l->adds[0].room, "bedroom"),
-          "the kettle added to the Bedroom: %d %s", l->add_count, l->add_count ? l->adds[0].entity : "");
-    frame(ui, H5_KEY_CIRCLE);
-    frame(ui, 0);
-    shot("10-bedroom-with-kettle");
-    CHECK(h5_ha_entity(h5_ui_ha(ui), "switch.kettle") && !strcmp(h5_ha_entity(h5_ui_ha(ui), "switch.kettle")->area, "kitchen"),
-          "still in its own room in HA");
-    /* A new room. */
+    CHECK(!strcmp(l->rooms[0].name, "Bedroom") && !strcmp(h5_ui_view(ui)->rooms[0].name, "Bedroom"), "moved left: %s",
+          l->rooms[0].name);
+    /* L1/R1 between rooms: the living room again, its floor lamp taken out from the menu. */
+    frame(ui, H5_KEY_R1);
+    frame(ui, H5_KEY_RIGHT);
     frame(ui, H5_KEY_OPTIONS);
-    for (int i = 0; i < 5; i++) frame(ui, H5_KEY_DOWN);
-    keyboards = 0;
+    frame(ui, H5_KEY_DOWN);
     frame(ui, H5_KEY_CROSS);
-    CHECK(keyboards == 1 && strstr(asked, "New room"), "the new room's keyboard: %s", asked);
-    h5_ui_text(ui, 1, "Gaming corner");
+    CHECK(!h5_layout_has(l, l->rooms[1].id, "light.lamp") && h5_layout_has(l, l->rooms[1].id, "light.ceiling"),
+          "the floor lamp out of the living room");
+    /* A third room from the tabs, then deleted from its tab with □: asked first, ○ keeps it, ✕ deletes it. */
+    frame(ui, H5_KEY_UP);
+    frame(ui, H5_KEY_RIGHT);
+    frame(ui, H5_KEY_CROSS);
+    h5_ui_text(ui, 1, "Spare room");
+    frame(ui, H5_KEY_CIRCLE);
+    CHECK(l->room_count == 3 && !strcmp(l->rooms[2].name, "Spare room"), "a third room: %d", l->room_count);
+    frame(ui, H5_KEY_UP);
     frame(ui, 0);
-    CHECK(l->room_count == 1 && !strcmp(l->rooms[0].name, "Gaming corner"), "the room made");
-    shot("11-new-room");
-    /* The lock: asked first. */
+    shot("12-tab-focused");
+    frame(ui, H5_KEY_SQUARE);
+    CHECK(!strcmp(h5_ui_screen(ui), "confirm"), "□ on its tab: asked first (%s)", h5_ui_screen(ui));
+    frame(ui, 0);
+    shot("12b-delete-room");
+    frame(ui, H5_KEY_CIRCLE);
+    CHECK(!strcmp(h5_ui_screen(ui), "home") && l->room_count == 3, "○ keeps it");
+    frame(ui, H5_KEY_SQUARE);
+    frame(ui, H5_KEY_CROSS);
+    CHECK(!strcmp(h5_ui_screen(ui), "home") && l->room_count == 2 && h5_ui_view(ui)->room_count == 2 &&
+              !strcmp(l->rooms[1].name, "Living room"), "✕ deletes it: %d rooms", l->room_count);
     h5_ui_destroy(ui);
 
-    /* Started again: connects by itself with the kept account, and the room is still there. */
+    /* Started again: connects by itself with the kept account, and the rooms are still there. */
     ui = h5_ui_create(&platform, fonts);
     CHECK(ui && !strcmp(h5_ui_screen(ui), "busy"), "connects at start");
     CHECK(!until_screen(ui, "home"), "home again");
     end = host_clock() + 8000;
     while (h5_ui_ha(ui)->phase != H5_READY && host_clock() < end) frame(ui, 0);
-    CHECK(h5_ui_view(ui)->room_count == 6, "six rooms with the one made here: %d", h5_ui_view(ui)->room_count);
+    CHECK(h5_ui_view(ui)->room_count == 2 && !strcmp(h5_ui_view(ui)->rooms[0].name, "Bedroom"), "the two rooms: %d",
+          h5_ui_view(ui)->room_count);
     frame(ui, 0);
     CHECK(pixel_near(10, 10, 0xff0b0f17u), "the background");
-    shot("12-restarted");
+    shot("13-restarted");
     /* Signed out from the menu, asked first. */
     frame(ui, H5_KEY_OPTIONS);
     for (int i = 0; i < 20; i++) frame(ui, H5_KEY_DOWN);
     frame(ui, H5_KEY_CROSS);
     CHECK(!strcmp(h5_ui_screen(ui), "confirm"), "sign out asked");
     frame(ui, 0);
-    shot("13-sign-out");
+    shot("14-sign-out");
     frame(ui, H5_KEY_CROSS);
     CHECK(!until_screen(ui, "sign-in") && !h5_is_file(account), "signed out, the account gone");
     h5_ui_destroy(ui);
