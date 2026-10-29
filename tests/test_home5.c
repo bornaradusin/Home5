@@ -40,7 +40,7 @@ static int checks, failures;
         }                                                                  \
     } while (0)
 
-static const char *work, *fonts, *ca_pem, *shots;
+static const char *work, *fonts, *ca_dir, *shots;
 static int plain_port, tls_port;
 
 /* ---- the host's network --------------------------------------------------------------------------- */
@@ -885,24 +885,24 @@ static void test_screens(void)
 int main(int argc, char **argv)
 {
     if (argc < 6) {
-        fprintf(stderr, "usage: test_home5 WORK FONTS PLAIN_PORT TLS_PORT CA_PEM [SHOTS]\n");
+        fprintf(stderr, "usage: test_home5 WORK FONTS PLAIN_PORT TLS_PORT CA_PATH [SHOTS]\n");
         return 2;
     }
     work = argv[1];
     fonts = argv[2];
     plain_port = atoi(argv[3]);
     tls_port = atoi(argv[4]);
-    ca_pem = argv[5];
+    ca_dir = argv[5];
     shots = argc > 6 && strcmp(argv[6], "-") ? argv[6] : NULL;
 
     static const char *roots_none[] = { NULL };
-    H5NetOps ops = { host_resolve, host_connect, host_send, host_recv, host_close, host_random, roots_none, host_log };
+    H5NetOps ops = { host_resolve, host_connect, host_send, host_recv, host_close, host_random, roots_none, host_log,
+                     NULL };
     h5_net_init(&ops);
     if (argc > 7 && !strcmp(argv[7], "--tls")) {
-        /* HTTPS with the test CA: its own run, since the roots are read once. */
-        static const char *roots[2];
-        roots[0] = ca_pem;
-        ops.ca_files = roots;
+        /* HTTPS with the test CA in a .crt file: roots are read once. */
+        const char *ca_dirs[] = { ca_dir, NULL };
+        ops.ca_dirs = ca_dirs;
         h5_net_init(&ops);
         test_client(1);
         printf("test_home5 (https): %d checks, %d failed\n", checks, failures);
