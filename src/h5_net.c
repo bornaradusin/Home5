@@ -134,7 +134,10 @@ static void load_ca_directory(const char *path)
             note("H5 net roots path too long in directory=%s", path);
             continue;
         }
-        load_ca_file(file);
+        int already_loaded = 0;
+        for (const char *const *known = ops.ca_files; known && *known; known++)
+            if (!strcmp(file, *known)) { already_loaded = 1; break; }
+        if (!already_loaded) load_ca_file(file);
     }
     closedir(dir);
 }
