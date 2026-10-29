@@ -47,6 +47,8 @@ python3 tools/make-font.py "$out/fonts.bin" >/dev/null
     printf "subjectAltName=DNS:localhost\nbasicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\n" > ext.cnf
     openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial -out server.pem -days 2 \
         -extfile ext.cnf 2>/dev/null
+    mkdir custom-ca
+    cp ca.pem custom-ca/home5-test-ca.crt
 )
 
 cc -std=c11 -Wall -Wextra -Wpedantic -Werror -D_DEFAULT_SOURCE -O1 -g -fsanitize=address,undefined \
@@ -65,7 +67,7 @@ for _ in $(seq 100); do [[ -f $out/ready-plain && -f $out/ready-tls ]] && break;
 shots=-
 if [[ ${1:-} == --shots ]]; then shots=$out/shots; mkdir -p "$shots"; fi
 "$out/test_home5" "$out/work" "$out/fonts.bin" $plain $tls "$out/tls/ca.pem" "$shots"
-"$out/test_home5" "$out/work" "$out/fonts.bin" $plain $tls "$out/tls/ca.pem" - --tls
+"$out/test_home5" "$out/work" "$out/fonts.bin" $plain $tls "$out/tls/custom-ca" - --tls
 if [[ $shots != - ]]; then
     python3 -c "
 import pathlib, sys

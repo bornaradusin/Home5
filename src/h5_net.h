@@ -26,6 +26,8 @@ typedef struct H5NetOps {
     /* PEM files of root certificates, all read; NULL ends the list. */
     const char *const *ca_files;
     void (*log)(const char *line);
+    /* Also trust every PEM certificate file ending in .crt in this directory. */
+    const char *ca_dir;
 } H5NetOps;
 
 void h5_net_init(const H5NetOps *ops);

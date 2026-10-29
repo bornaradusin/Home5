@@ -16,6 +16,7 @@
 #include "mbedtls/x509_crt.h"
 #include "psa/crypto.h"
 
+#include <dirent.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -101,6 +102,43 @@ static void *tls_calloc(size_t count, size_t size)
     return count && size > SIZE_MAX / count ? NULL : h5_alloc(count * size);
 }
 
+static void load_ca_file(const char *file)
+{
+    H5Buf pem = { 0 };
+    if (!h5_read_file(file, &pem, 4 * 1024 * 1024) && !h5_buf_terminate(&pem)) {
+        /* PEM wants its closing 0 counted. */
+        int status = mbedtls_x509_crt_parse(&roots, pem.data, pem.len + 1);
+        int count = 0;
+        for (const mbedtls_x509_crt *c = &roots; c && c->version; c = c->next) count++;
+        note("H5 net roots file=%s certificates=%d refused=%d", file, count - root_count, status > 0 ? status : 0);
+        root_count = count;
+    } else {
+        note("H5 net roots file=%s unreadable", file);
+    }
+    h5_buf_free(&pem);
+}
+
+static void load_ca_directory(const char *path)
+{
+    DIR *dir = opendir(path);
+    if (!dir) {
+        note("H5 net roots directory=%s unreadable", path);
+        return;
+    }
+    struct dirent *entry;
+    while ((entry = readdir(dir))) {
+        size_t length = strlen(entry->d_name);
+        char file[H5_PATH];
+        if (length < 4 || strcmp(entry->d_name + length - 4, ".crt")) continue;
+        if (h5_format(file, sizeof(file), "%s/%s", path, entry->d_name)) {
+            note("H5 net roots path too long in directory=%s", path);
+            continue;
+        }
+        load_ca_file(file);
+    }
+    closedir(dir);
+}
+
 /* The random generator and the root certificates, once. */
 static int crypto_ready(void)
 {
@@ -116,20 +154,8 @@ static int crypto_ready(void)
         return 0;
     }
     mbedtls_x509_crt_init(&roots);
-    for (const char *const *file = ops.ca_files; file && *file; file++) {
-        H5Buf pem = { 0 };
-        if (!h5_read_file(*file, &pem, 4 * 1024 * 1024) && !h5_buf_terminate(&pem)) {
-            /* PEM wants its closing 0 counted. */
-            status = mbedtls_x509_crt_parse(&roots, pem.data, pem.len + 1);
-            int count = 0;
-            for (const mbedtls_x509_crt *c = &roots; c && c->version; c = c->next) count++;
-            note("H5 net roots file=%s certificates=%d refused=%d", *file, count - root_count, status > 0 ? status : 0);
-            root_count = count;
-        } else {
-            note("H5 net roots file=%s unreadable", *file);
-        }
-        h5_buf_free(&pem);
-    }
+    for (const char *const *file = ops.ca_files; file && *file; file++) load_ca_file(*file);
+    if (ops.ca_dir) load_ca_directory(ops.ca_dir);
     crypto_state = 1;
     return 1;
 }
