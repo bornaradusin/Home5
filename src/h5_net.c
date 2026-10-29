@@ -17,11 +17,14 @@
 #include "psa/crypto.h"
 
 #include <dirent.h>
+#include <fcntl.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
 #include <time.h>
+#include <unistd.h>
 
 enum {
     CONNECT_MS = 6000,
@@ -118,31 +121,57 @@ static void load_ca_file(const char *file)
     h5_buf_free(&pem);
 }
 
+static void load_ca_entry(const char *path, const char *name)
+{
+    size_t length = strlen(name);
+    char file[H5_PATH];
+    if (length < 4 || strcmp(name + length - 4, ".crt")) return;
+    if (h5_format(file, sizeof(file), "%s/%s", path, name)) {
+        note("H5 net roots path too long in directory=%s", path);
+        return;
+    }
+    for (const char *const *known = ops.ca_files; known && *known; known++) {
+        const char *known_name = strrchr(*known, '/');
+        known_name = known_name ? known_name + 1 : *known;
+        if (!strcmp(name, known_name)) return;
+    }
+    load_ca_file(file);
+}
+
 static void load_ca_directory(const char *path)
 {
+#if !defined(__FreeBSD__)
+    /* Host tests use the portable directory stream API. */
     DIR *dir = opendir(path);
     if (!dir) {
         note("H5 net roots directory=%s unreadable", path);
         return;
     }
     struct dirent *entry;
-    while ((entry = readdir(dir))) {
-        size_t length = strlen(entry->d_name);
-        char file[H5_PATH];
-        if (length < 4 || strcmp(entry->d_name + length - 4, ".crt")) continue;
-        if (h5_format(file, sizeof(file), "%s/%s", path, entry->d_name)) {
-            note("H5 net roots path too long in directory=%s", path);
-            continue;
-        }
-        int already_loaded = 0;
-        for (const char *const *known = ops.ca_files; known && *known; known++) {
-            const char *name = strrchr(*known, '/');
-            name = name ? name + 1 : *known;
-            if (!strcmp(entry->d_name, name)) { already_loaded = 1; break; }
-        }
-        if (!already_loaded) load_ca_file(file);
-    }
+    while ((entry = readdir(dir))) load_ca_entry(path, entry->d_name);
     closedir(dir);
+#else
+    /* The PS5 target is FreeBSD-based; read its directory-entry records directly. */
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        note("H5 net roots directory=%s unreadable", path);
+        return;
+    }
+    char entries[8192];
+    long base = 0;
+    ssize_t got;
+    while ((got = getdirentries(fd, entries, (int)sizeof(entries), &base)) > 0) {
+        for (size_t offset = 0; offset < (size_t)got;) {
+            const struct dirent *entry = (const struct dirent *)(entries + offset);
+            size_t record = entry->d_reclen;
+            if (record < offsetof(struct dirent, d_name) + 1 || record > (size_t)got - offset) break;
+            load_ca_entry(path, entry->d_name);
+            offset += record;
+        }
+    }
+    if (got < 0) note("H5 net roots directory=%s read failed", path);
+    close(fd);
+#endif
 }
 
 /* The random generator and the root certificates, once. */
