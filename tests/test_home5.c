@@ -901,7 +901,8 @@ int main(int argc, char **argv)
     h5_net_init(&ops);
     if (argc > 7 && !strcmp(argv[7], "--tls")) {
         /* HTTPS with the test CA in a .crt file: roots are read once. */
-        ops.ca_dir = ca_dir;
+        const char *ca_dirs[] = { ca_dir, NULL };
+        ops.ca_dirs = ca_dirs;
         h5_net_init(&ops);
         test_client(1);
         printf("test_home5 (https): %d checks, %d failed\n", checks, failures);

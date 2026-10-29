@@ -664,11 +664,10 @@ int main(void)
     if ((rc = sceCommonDialogInitialize()) < 0) say("H5 ps5 common dialog=%#x", (unsigned)rc);   /* already: fine */
     say("H5 ps5 zone=%d summer=%d enter=%d", time_zone, summer, enter);
 
-    static const char *const roots[] = { "/system/common/cert/CA_LIST.cer",
-                                         "/data/homebrew/PPSA11019/assets/custom-ca.crt", "/app0/assets/custom-ca.crt",
-                                         "/app0/assets/ca-certificates.crt", NULL };
+    static const char *const roots[] = { "/system/common/cert/CA_LIST.cer", "/app0/assets/ca-certificates.crt", NULL };
+    static const char *const ca_dirs[] = { "/data/homebrew/PPSA11019/assets", "/app0/assets", NULL };
     const H5NetOps net = { net_resolve, net_connect, net_send, net_recv, net_close, net_random, roots, log_line,
-                           "/app0/assets" };
+                           ca_dirs };
     h5_net_init(&net);
 
     if (make_tile_map()) halt("Home5: the screen layout is wrong.");

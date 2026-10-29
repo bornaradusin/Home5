@@ -48,7 +48,7 @@ python3 tools/make-font.py "$out/fonts.bin" >/dev/null
     openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial -out server.pem -days 2 \
         -extfile ext.cnf 2>/dev/null
     mkdir custom-ca
-    cp ca.pem custom-ca/home5-test-ca.crt
+    cp ca.pem custom-ca/ca.crt
 )
 
 cc -std=c11 -Wall -Wextra -Wpedantic -Werror -D_DEFAULT_SOURCE -O1 -g -fsanitize=address,undefined \

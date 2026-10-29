@@ -135,8 +135,11 @@ static void load_ca_directory(const char *path)
             continue;
         }
         int already_loaded = 0;
-        for (const char *const *known = ops.ca_files; known && *known; known++)
-            if (!strcmp(file, *known)) { already_loaded = 1; break; }
+        for (const char *const *known = ops.ca_files; known && *known; known++) {
+            const char *name = strrchr(*known, '/');
+            name = name ? name + 1 : *known;
+            if (!strcmp(entry->d_name, name)) { already_loaded = 1; break; }
+        }
         if (!already_loaded) load_ca_file(file);
     }
     closedir(dir);
@@ -157,8 +160,8 @@ static int crypto_ready(void)
         return 0;
     }
     mbedtls_x509_crt_init(&roots);
+    for (const char *const *dir = ops.ca_dirs; dir && *dir; dir++) load_ca_directory(*dir);
     for (const char *const *file = ops.ca_files; file && *file; file++) load_ca_file(*file);
-    if (ops.ca_dir) load_ca_directory(ops.ca_dir);
     crypto_state = 1;
     return 1;
 }
