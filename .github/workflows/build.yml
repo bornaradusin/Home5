@@ -1,0 +1,83 @@
+# Builds Home5 from source on GitHub's machines (tools/build.sh) and, when asked, makes a draft
+# release of it: the tag is the version from src/h5.h (H5_VERSION), the notes are
+# release-notes/<version>.md, and the assets are PPSA11019.zip, PPSA11019-sources.tar.xz and
+# SHA256SUMS.txt. The draft is checked and published by hand. Without a draft, the files are
+# kept as the run's artifact.
+name: Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      draft_release:
+        description: "Make a draft release <version> with the app zip (otherwise it is kept as the run's artifact)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write   # the draft release
+
+concurrency:
+  group: home5-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang-18 llvm-18 lld-18 zip unzip xz-utils wget make python3-pil python3-numpy
+
+      - name: The version
+        id: version
+        run: |
+          ver=$(sed -n 's/^#define H5_VERSION "\(.*\)"$/\1/p' src/h5.h)
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "Home5 $ver"
+          if [ '${{ inputs.draft_release }}' = true ] && [ ! -f "release-notes/$ver.md" ]; then
+            echo "::error::release-notes/$ver.md is missing: write the release notes before making the draft"
+            exit 1
+          fi
+
+      - name: Download cache
+        uses: actions/cache@v4
+        with:
+          path: .build/downloads
+          key: downloads-${{ hashFiles('tools/pins.sh') }}
+
+      - name: Host checks
+        run: bash tests/test.sh
+
+      - name: Build
+        run: |
+          HOME5_RELEASE_DIR="$PWD/release" bash tools/build.sh
+          ls -la release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Home5-${{ steps.version.outputs.version }}
+          path: release/
+          if-no-files-found: error
+
+      - name: Draft release
+        if: inputs.draft_release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          tag="$VERSION"
+          state=$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null || echo none)
+          if [ "$state" = false ]; then
+            echo "::error::$tag is already published: raise H5_VERSION in src/h5.h and contentVersion in sce_sys/param.json for a new release"
+            exit 1
+          fi
+          if [ "$state" = true ]; then
+            gh release delete "$tag" --yes
+          fi
+          gh release create "$tag" --draft --target "$GITHUB_SHA" --title "Home5 $VERSION" \
+            --notes-file "release-notes/$VERSION.md" \
+            release/PPSA11019.zip release/PPSA11019-sources.tar.xz release/SHA256SUMS.txt
+          echo "::notice title=Draft release::Home5 $VERSION is ready to check and publish"

@@ -9,7 +9,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define H5_VERSION "1.0.2"
+#define H5_VERSION "1.0.3"
 #ifndef H5_TITLE_ID
 #define H5_TITLE_ID "PPSA11019"
 #endif

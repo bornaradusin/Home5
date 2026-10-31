@@ -10,7 +10,7 @@ the lights, switches, blinds, thermostats, scenes and sensors you want; then you
 lights, set their brightness and colour, open the blinds, set the heating and run scenes,
 all with the DualSense: the triggers push back as you dim a light, and the light bar glows
 in the colour of the light you are on. The app is `PPSA11019`, its tile is called **Home5**
-and it sits under **Media**. This is version 1.0.2.
+and it sits under **Media**. This is version 1.0.3.
 
 Home5 is not made by, or connected with, Home Assistant, the Open Home Foundation or Sony.
 
@@ -126,6 +126,11 @@ bash tools/build.sh  # the app and its packages, into release/
 
 `tools/build.sh` builds Home5 on the PS5 Native App Boilerplate and mbedTLS at the versions
 in `tools/pins.sh`, every download checked against its SHA-256.
+
+Releases are built on GitHub: raise `H5_VERSION` in `src/h5.h` and `contentVersion` in
+`sce_sys/param.json`, write `release-notes/<version>.md`, push, and run **Actions › Build** with
+**Make a draft release** ticked. It runs the host tests, builds, and makes a draft release to check
+and publish.
 
 ## Licence and credits
 
