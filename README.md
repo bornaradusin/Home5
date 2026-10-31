@@ -107,7 +107,9 @@ What it can't do (yet): cameras, alarm panels, vacuums, dashboards, the voice as
 
 The PS5 has to reach Home Assistant directly: on your home network by its IP address, or by
 an `https://` address whose certificate a public authority signed (such as a Nabu Casa
-address). A self-signed certificate is refused.
+address). Self-signed certificates are optionally supported: place the self-signed CA's
+`.crt` file in `/data/homebrew/PPSA11019/assets`. Home5 trusts every `.crt` file in that
+directory in addition to the console and bundled certificate authorities.
 
 If something goes wrong, Home5 writes a log. To get it, put an empty file `home5-log.txt`
 at the top of a USB drive and start Home5: it writes its log into that file.
