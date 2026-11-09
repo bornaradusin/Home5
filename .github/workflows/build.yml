@@ -77,7 +77,18 @@ jobs:
           if [ "$state" = true ]; then
             gh release delete "$tag" --yes
           fi
-          gh release create "$tag" --draft --target "$GITHUB_SHA" --title "Home5 $VERSION" \
+          # A test version (H5_VERSION with a suffix, e.g. 1.1.0-shortcuts-test) goes out as a pre-release with its
+          # app zip renamed PPSA11019-test.zip beside the source zip. The internal updater skips pre-releases, and the
+          # homebrew catalog moves its listing only to a release that has a PPSA11019.zip or a single zip, so two zips
+          # named otherwise leave Home5's listing alone. A normal release keeps PPSA11019.zip, which the catalog takes.
+          app=release/PPSA11019.zip pre=
+          case $VERSION in
+            *[!0-9.]*)
+              mv release/PPSA11019.zip release/PPSA11019-test.zip
+              sed -i 's#  PPSA11019.zip$#  PPSA11019-test.zip#' release/SHA256SUMS.txt
+              app=release/PPSA11019-test.zip pre=--prerelease ;;
+          esac
+          gh release create "$tag" --draft $pre --target "$GITHUB_SHA" --title "Home5 $VERSION" \
             --notes-file "release-notes/$VERSION.md" \
-            release/PPSA11019.zip release/PPSA11019-sources.tar.xz release/SHA256SUMS.txt
+            "$app" release/Home5-*-source.zip release/PPSA11019-sources.tar.xz release/SHA256SUMS.txt
           echo "::notice title=Draft release::Home5 $VERSION is ready to check and publish"

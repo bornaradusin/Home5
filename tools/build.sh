@@ -21,7 +21,10 @@ B=$here/.build
 bp=$B/bp
 out=${HOME5_RELEASE_DIR:-$here/release}
 version=$(sed -n 's/^#define H5_VERSION "\(.*\)"$/\1/p' "$here/src/h5.h")
-[[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "src/h5.h has no H5_VERSION" >&2; exit 2; }
+# X.Y.Z, optionally with a test-version suffix (1.1.0-shortcuts-test): the suffix makes the build a
+# pre-release the updater and the catalog leave alone (the workflow); the app's numeric part is what
+# param.json carries.
+[[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]] || { echo "src/h5.h has no valid H5_VERSION" >&2; exit 2; }
 for command in git curl wget unzip zip tar xz make clang-18 llvm-ar-18 llvm-readelf-18 python3; do
     command -v "$command" >/dev/null || { echo "missing: $command" >&2; exit 2; }
 done
@@ -114,7 +117,7 @@ step_app() {
 import json, sys
 path, version, title_id = sys.argv[1:4]
 param = json.load(open(path, encoding="utf-8"))
-major, minor, patch = (int(n) for n in version.split("."))
+major, minor, patch = (int(n) for n in version.split("-", 1)[0].split("."))
 want = f"{major:02d}.{minor:03d}.{patch:03d}"
 assert param["titleId"] == title_id, f"sce_sys/param.json: titleId {param['titleId']}, not {title_id}"
 assert param["contentVersion"] == want, f"sce_sys/param.json: contentVersion {param['contentVersion']}, src/h5.h says {want}"

@@ -54,7 +54,7 @@ python3 tools/make-font.py "$out/fonts.bin" >/dev/null
 cc -std=c11 -Wall -Wextra -Wpedantic -Werror -D_DEFAULT_SOURCE -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=all -DH5_HEAP_ONLY -Isrc -I"$mbedtls/include" "$config" \
     tests/test_home5.c src/h5_base.c src/h5_draw.c src/h5_ha.c src/h5_json.c src/h5_layout.c src/h5_net.c src/h5_ui.c \
-    "$host_lib" -lm -o "$out/test_home5"
+    src/h5_shortcuts.c "$host_lib" -lm -o "$out/test_home5"
 
 plain=18123 tls=18443
 python3 tests/fake_ha.py $plain "$out/ready-plain" &

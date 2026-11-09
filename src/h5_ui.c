@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Home5's screens (h5_ui.h). */
 #include "h5_ui.h"
+#include "h5_shortcuts.h"
 
 #include <math.h>
 #include <stdarg.h>
@@ -33,20 +34,22 @@ enum { MAX_ITEMS = 1024, TOAST_MS = 3200, REPEAT_STEP = 10 };
 #define C_FOCUS 0xffffffffu
 
 typedef enum Screen {
-    S_SIGN_IN, S_CODE, S_BUSY, S_HOME, S_LIGHT, S_CLIMATE, S_MENU, S_PICK, S_CONFIRM, S_ABOUT
+    S_SIGN_IN, S_CODE, S_BUSY, S_HOME, S_LIGHT, S_CLIMATE, S_MENU, S_PICK, S_CONFIRM, S_ABOUT,
+    S_SHORTCUTS, S_SHORTCUT, S_CAPTURE
 } Screen;
 static const char *const screen_names[] = { "sign-in", "code", "busy", "home", "light", "climate", "menu", "pick",
-                                            "confirm", "about" };
+                                            "confirm", "about", "shortcuts", "shortcut", "capture" };
 
 typedef enum Busy { B_NONE, B_SIGN_IN, B_CODE, B_CONNECT, B_USB, B_SIGN_OUT } Busy;
 typedef enum Ask {
-    A_NONE, A_ADDRESS, A_USERNAME, A_PASSWORD, A_CODE, A_RENAME_DEVICE, A_RENAME_ROOM, A_NEW_ROOM, A_SEARCH
+    A_NONE, A_ADDRESS, A_USERNAME, A_PASSWORD, A_CODE, A_RENAME_DEVICE, A_RENAME_ROOM, A_NEW_ROOM, A_SEARCH,
+    A_SHORTCUT_NAME
 } Ask;
 typedef enum Zone { Z_TABS, Z_GRID } Zone;
 typedef enum Confirm { C_NONE, C_LOCK, C_RESET, C_SIGN_OUT, C_DELETE_ROOM } Confirm;
 typedef enum Item {
     M_ADD, M_REMOVE, M_RENAME_DEVICE, M_RENAME_ROOM, M_MOVE_LEFT, M_MOVE_RIGHT, M_NEW_ROOM, M_DELETE_ROOM,
-    M_LIGHT_FOLLOW, M_RESET, M_ABOUT, M_SIGN_OUT
+    M_SHORTCUTS, M_LIGHT_FOLLOW, M_RESET, M_ABOUT, M_SIGN_OUT
 } Item;
 
 struct H5Ui {
@@ -103,6 +106,20 @@ struct H5Ui {
     char toast[200];
     uint64_t toast_until;
     char shown_error[H5_ERROR];
+    /* controller shortcuts */
+    H5Shortcuts shortcuts;
+    char path_shortcuts[H5_PATH];
+    int sc_at, sc_top;        /* the list: 0 is the master switch, 1..count the shortcuts, then Add */
+    int sc_edit, sc_row;      /* the shortcut being edited, and the focused field */
+    int pick_for;             /* S_PICK: 0 a room, 1 a shortcut's action */
+    uint32_t held;            /* the buttons down this frame (the capture screen reads them) */
+    uint8_t cap_mode;         /* capturing: H5_TRIG_COMBO or H5_TRIG_SEQUENCE */
+    int cap_armed;            /* set once the buttons that opened capture are let go */
+    uint32_t cap_held_max;    /* combo: the most buttons seen held together */
+    uint32_t cap_prev;        /* sequence: what was held last frame, for new presses */
+    uint32_t cap_seq[H5_SEQ_MAX];
+    int cap_len;
+    uint64_t cap_last, cap_start;   /* last activity, and when capture began */
 };
 
 static void say(H5Ui *ui, const char *format, ...) __attribute__((format(printf, 2, 3)));
@@ -469,6 +486,127 @@ static uint32_t light_colour(const H5Entity *e)
     return 0xffffd9a0u;
 }
 
+/* ---- shortcuts ------------------------------------------------------------------------------------------
+ * The player sets up a combo or sequence that runs something in Home Assistant; the background
+ * reader (outside the app) fires it while a game is in front. Here: the list, the editor, and
+ * recording the buttons. The app writes the reader its config and token (shortcuts_write_reader). */
+
+static void build_pick(H5Ui *ui);   /* the picker, defined with the rest below */
+
+/* The held buttons (H5_KEY bits) as the DualSense's own bits (H5BTN), for a shortcut. */
+static uint32_t btn_from_keys(uint32_t keys)
+{
+    static const struct { uint32_t key, btn; } map[] = {
+        { H5_KEY_UP, H5BTN_UP }, { H5_KEY_DOWN, H5BTN_DOWN }, { H5_KEY_LEFT, H5BTN_LEFT }, { H5_KEY_RIGHT, H5BTN_RIGHT },
+        { H5_KEY_CROSS, H5BTN_CROSS }, { H5_KEY_CIRCLE, H5BTN_CIRCLE }, { H5_KEY_TRIANGLE, H5BTN_TRIANGLE },
+        { H5_KEY_SQUARE, H5BTN_SQUARE }, { H5_KEY_OPTIONS, H5BTN_OPTIONS }, { H5_KEY_L1, H5BTN_L1 },
+        { H5_KEY_R1, H5BTN_R1 }, { H5_KEY_L2, H5BTN_L2 }, { H5_KEY_R2, H5BTN_R2 }, { H5_KEY_L3, H5BTN_L3 },
+        { H5_KEY_R3, H5BTN_R3 }, { H5_KEY_TOUCH, H5BTN_TOUCH },
+    };
+    uint32_t out = 0;
+    for (size_t i = 0; i < sizeof(map) / sizeof(map[0]); i++)
+        if (keys & map[i].key) out |= map[i].btn;
+    return out;
+}
+
+static int shortcut_runnable(H5Kind kind)
+{
+    return kind == H5_LIGHT || kind == H5_SWITCH || kind == H5_FAN || kind == H5_COVER || kind == H5_SCENE ||
+           kind == H5_SCRIPT || kind == H5_BUTTON;
+}
+
+/* The action a shortcut runs an entity with, from its kind (as ✕ does on the home screen). -1: not runnable. */
+static int shortcut_action(const H5Entity *e, const char *name, char *domain, size_t ds, char *service, size_t ss,
+                           char *label, size_t ls)
+{
+    const char *kind_label, *svc;
+    switch (e->kind) {
+    case H5_SCENE: kind_label = "Scene"; svc = "turn_on"; break;
+    case H5_SCRIPT: kind_label = "Script"; svc = "turn_on"; break;
+    case H5_BUTTON: kind_label = "Button"; svc = "press"; break;
+    case H5_LIGHT: kind_label = "Light"; svc = "toggle"; break;
+    case H5_SWITCH: kind_label = "Switch"; svc = "toggle"; break;
+    case H5_FAN: kind_label = "Fan"; svc = "toggle"; break;
+    case H5_COVER: kind_label = "Blind"; svc = "toggle"; break;
+    default: return -1;
+    }
+    domain_of(e->id, domain, ds);
+    h5_copy(service, ss, svc);
+    snprintf(label, ls, "%s · %s", kind_label, name);
+    return 0;
+}
+
+static void shortcuts_write_reader(H5Ui *ui)
+{
+    char url[400];
+    if (!ui->platform.reader_dir) return;
+    h5_url_text(&ui->ha.url, url, sizeof(url));
+    h5_shortcuts_write_reader(&ui->shortcuts, ui->platform.reader_dir, url, ui->ha.access, ui->ha.refresh,
+                              ui->ha.expires, "");
+}
+
+static void shortcuts_changed(H5Ui *ui)
+{
+    if (h5_shortcuts_save(&ui->shortcuts, ui->path_shortcuts)) say(ui, "H5 ui can't write %s", ui->path_shortcuts);
+    shortcuts_write_reader(ui);
+    ui->dirty = 1;
+}
+
+static H5Shortcut *editing(H5Ui *ui)
+{
+    if (ui->sc_edit < 0 || ui->sc_edit >= ui->shortcuts.count) return NULL;
+    return &ui->shortcuts.items[ui->sc_edit];
+}
+
+static void open_shortcuts(H5Ui *ui)
+{
+    ui->sc_at = ui->sc_top = 0;
+    go(ui, S_SHORTCUTS);
+}
+
+static void open_shortcut(H5Ui *ui, int index)
+{
+    ui->sc_edit = index;
+    ui->sc_row = 0;
+    go(ui, S_SHORTCUT);
+}
+
+static void shortcut_add(H5Ui *ui)
+{
+    char name[H5_SC_NAME];
+    snprintf(name, sizeof(name), "Shortcut %d", ui->shortcuts.count + 1);
+    int i = h5_shortcuts_add(&ui->shortcuts, name, "", "", "", "", "");
+    if (i < 0) {
+        toast(ui, "That's the most shortcuts.");
+        return;
+    }
+    shortcuts_changed(ui);
+    open_shortcut(ui, i);
+}
+
+static void start_capture(H5Ui *ui)
+{
+    H5Shortcut *sc = editing(ui);
+    if (!sc) return;
+    ui->cap_mode = sc->mode;
+    ui->cap_held_max = ui->cap_prev = 0;
+    ui->cap_len = 0;
+    ui->cap_last = ui->cap_start = ui->now;
+    ui->cap_armed = 0;
+    go(ui, S_CAPTURE);
+}
+
+static void open_pick_action(H5Ui *ui)
+{
+    h5_free(ui->pick);
+    ui->pick = NULL;
+    ui->pick_for = 1;
+    ui->pick_filter = 0;
+    ui->pick_query[0] = 0;
+    build_pick(ui);
+    go(ui, S_PICK);
+}
+
 /* ---- the menu ------------------------------------------------------------------------------------------- */
 
 static void open_menu(H5Ui *ui)
@@ -488,6 +626,7 @@ static void open_menu(H5Ui *ui)
     }
     if (ui->ha.phase == H5_READY) ui->menu[ui->menu_count++] = M_NEW_ROOM;
     if (ui->ha.phase == H5_READY && room) ui->menu[ui->menu_count++] = M_DELETE_ROOM;
+    if (ui->ha.phase == H5_READY) ui->menu[ui->menu_count++] = M_SHORTCUTS;
     ui->menu[ui->menu_count++] = M_LIGHT_FOLLOW;
     if (ui->ha.phase == H5_READY && room) ui->menu[ui->menu_count++] = M_RESET;
     ui->menu[ui->menu_count++] = M_ABOUT;
@@ -531,6 +670,11 @@ static void menu_text(H5Ui *ui, Item item, char *label, size_t size, char *about
     case M_DELETE_ROOM:
         snprintf(label, size, "Delete %s", room_name);
         h5_copy(about, about_size, "Only the room on this PS5");
+        break;
+    case M_SHORTCUTS:
+        h5_copy(label, size, "Shortcuts");
+        h5_copy(about, about_size, "Run a scene or a device with a controller combo while you play");
+        if (ui->shortcuts.count) snprintf(value, value_size, "%d", ui->shortcuts.count);
         break;
     case M_LIGHT_FOLLOW:
         h5_copy(label, size, "Light bar follows lights");
@@ -608,6 +752,9 @@ static void menu_choose(H5Ui *ui)
         ui->confirm_from = S_MENU;
         h5_copy(ui->confirm_id, sizeof(ui->confirm_id), room_id);
         go(ui, S_CONFIRM);
+        break;
+    case M_SHORTCUTS:
+        open_shortcuts(ui);
         break;
     case M_LIGHT_FOLLOW:
         ui->light_follow = !ui->light_follow;
@@ -715,7 +862,8 @@ static void build_pick(H5Ui *ui)
     if (!ui->pick) return;
     uint32_t kinds = filters[clampi(ui->pick_filter, 0, FILTERS - 1)].kinds;
     for (int i = 0; i < ui->ha.count; i++)
-        if (!ui->ha.entities[i].hidden && (kinds & KIND(ui->ha.entities[i].kind)) && pick_matches(ui, &ui->ha.entities[i]))
+        if (!ui->ha.entities[i].hidden && (kinds & KIND(ui->ha.entities[i].kind)) &&
+            (!ui->pick_for || shortcut_runnable(ui->ha.entities[i].kind)) && pick_matches(ui, &ui->ha.entities[i]))
             ui->pick[ui->pick_count++] = i;
     pick_ui = ui;
     ui->pick_built = ui->ha.version;
@@ -729,6 +877,7 @@ static void open_pick(H5Ui *ui)
 {
     h5_free(ui->pick);
     ui->pick = NULL;
+    ui->pick_for = 0;
     ui->pick_filter = 0;
     ui->pick_query[0] = 0;
     build_pick(ui);
@@ -753,6 +902,7 @@ static void start_busy(H5Ui *ui, Busy busy)
 static void connected(H5Ui *ui)
 {
     if (h5_ha_save(&ui->ha, ui->path_account)) say(ui, "H5 ui can't write the account");
+    shortcuts_write_reader(ui);   /* the reader gets the fresh token and the shortcuts */
     ui->retries = 0;
     memset(ui->password, 0, sizeof(ui->password));
     ui->code[0] = 0;
@@ -858,6 +1008,7 @@ static void do_busy(H5Ui *ui)
     case B_SIGN_OUT:
         h5_ha_sign_out(&ui->ha);
         remove(ui->path_account);
+        if (ui->platform.reader_dir) h5_shortcuts_clear_reader(ui->platform.reader_dir);   /* the token is gone */
         rebuild(ui);
         ui->form_row = 0;
         ui->form_error[0] = 0;
@@ -918,6 +1069,26 @@ void h5_ui_text(H5Ui *ui, int ok, const char *text)
             /* nothing of this kind: all kinds, before saying there's nothing */
             ui->pick_filter = 0;
             build_pick(ui);
+        }
+        break;
+    }
+    case A_SHORTCUT_NAME: {
+        H5Shortcut *sc = editing(ui);
+        if (sc && text[0]) {
+            char clean[H5_SC_NAME];
+            h5_copy(clean, sizeof(clean), text);
+            for (char *p = clean; *p; p++)
+                if (*p == '|') *p = '/';   /* the field separator must not be in a name */
+            h5_copy(sc->name, sizeof(sc->name), clean);
+            char *sep = strstr(sc->label, " · ");   /* keep the kind, follow with the new name */
+            size_t klen = sep ? (size_t)(sep - sc->label) : 0;
+            if (klen && klen < 32) {
+                char kind[32];
+                memcpy(kind, sc->label, klen);
+                kind[klen] = 0;
+                snprintf(sc->label, sizeof(sc->label), "%.16s · %.40s", kind, sc->name);
+            }
+            shortcuts_changed(ui);
         }
         break;
     }
@@ -1189,7 +1360,11 @@ static void update_menu(H5Ui *ui, uint32_t k)
 static void update_pick(H5Ui *ui, uint32_t k)
 {
     const H5Room *room = current_room(ui);
-    if (!room || (k & back_key(ui))) {
+    if (k & back_key(ui)) {
+        if (ui->pick_for) {
+            go(ui, S_SHORTCUT);
+            return;
+        }
         /* Home, on the room's first card (or what was focused before), so the light bar follows it at once. */
         go(ui, S_HOME);
         Contents *c = h5_alloc(sizeof(Contents));
@@ -1198,6 +1373,10 @@ static void update_pick(H5Ui *ui, uint32_t k)
             refocus(ui, c);
             h5_free(c);
         }
+        return;
+    }
+    if (!ui->pick_for && !room) {
+        go(ui, S_HOME);
         return;
     }
     if (ui->pick_built != ui->ha.version) build_pick(ui);   /* HA's entities changed under it */
@@ -1232,6 +1411,19 @@ static void update_pick(H5Ui *ui, uint32_t k)
     if ((k & accept_key(ui)) && ui->pick_count) {
         int index = ui->pick[ui->pick_at];
         H5Entity *e = &ui->ha.entities[index];
+        if (ui->pick_for) {
+            char name[96];
+            H5Shortcut *sc = editing(ui);
+            h5_display_name(ui->layout, e, NULL, name, sizeof(name));
+            if (sc && !shortcut_action(e, name, sc->domain, sizeof(sc->domain), sc->service, sizeof(sc->service),
+                                       sc->label, sizeof(sc->label))) {
+                h5_copy(sc->entity, sizeof(sc->entity), e->id);
+                shortcuts_changed(ui);
+                toast(ui, "Runs %s", sc->label);
+            }
+            go(ui, S_SHORTCUT);
+            return;
+        }
         char room_id[64], room_name[64];
         h5_copy(room_id, sizeof(room_id), room->id);
         h5_copy(room_name, sizeof(room_name), room->name);
@@ -1302,10 +1494,134 @@ static void update_confirm(H5Ui *ui, uint32_t k)
     }
 }
 
+static void update_shortcuts(H5Ui *ui, uint32_t k)
+{
+    int count = ui->shortcuts.count, rows = count + 2;   /* 0 master, 1..count shortcuts, last Add */
+    if (k & back_key(ui)) {
+        shortcuts_changed(ui);
+        go(ui, S_HOME);
+        return;
+    }
+    if (list_move(&ui->sc_at, rows, k)) ui->dirty = 1;
+    scroll_to(ui->sc_at, &ui->sc_top, LIST_ROWS);
+    if (k & accept_key(ui)) {
+        if (ui->sc_at == 0) {
+            ui->shortcuts.enabled = !ui->shortcuts.enabled;
+            shortcuts_changed(ui);
+        } else if (ui->sc_at <= count) {
+            open_shortcut(ui, ui->sc_at - 1);
+        } else {
+            shortcut_add(ui);
+        }
+    }
+    if ((k & H5_KEY_SQUARE) && ui->sc_at >= 1 && ui->sc_at <= count) {
+        char name[H5_SC_NAME];
+        h5_copy(name, sizeof(name), ui->shortcuts.items[ui->sc_at - 1].name);
+        h5_shortcuts_delete(&ui->shortcuts, ui->sc_at - 1);
+        shortcuts_changed(ui);
+        ui->sc_at = clampi(ui->sc_at, 0, ui->shortcuts.count + 1);
+        toast(ui, "%s is deleted.", name);
+    }
+}
+
+enum { R_NAME, R_ACTION, R_TYPE, R_RECORD, R_CONFIRM, R_SAVE, R_ROWS };
+
+static void update_shortcut(H5Ui *ui, uint32_t k)
+{
+    H5Shortcut *sc = editing(ui);
+    if (!sc) {
+        go(ui, S_SHORTCUTS);
+        return;
+    }
+    if (k & back_key(ui)) {
+        shortcuts_changed(ui);
+        go(ui, S_SHORTCUTS);
+        return;
+    }
+    if (list_move(&ui->sc_row, R_ROWS, k)) ui->dirty = 1;
+    int dir = (k & H5_KEY_RIGHT) ? 1 : (k & H5_KEY_LEFT) ? -1 : 0;
+    if (dir && ui->sc_row == R_TYPE) {
+        sc->mode = sc->mode == H5_TRIG_COMBO ? H5_TRIG_SEQUENCE : H5_TRIG_COMBO;
+        sc->combo = 0;
+        sc->len = 0;
+        shortcuts_changed(ui);
+    } else if (dir && ui->sc_row == R_CONFIRM) {
+        sc->confirm = (uint8_t)(((int)sc->confirm + dir + 3) % 3);
+        shortcuts_changed(ui);
+    }
+    if (k & accept_key(ui)) {
+        switch (ui->sc_row) {
+        case R_NAME: keyboard(ui, A_SHORTCUT_NAME, "Shortcut name", sc->name, H5_TEXT_NAME); break;
+        case R_ACTION: open_pick_action(ui); break;
+        case R_TYPE:
+            sc->mode = sc->mode == H5_TRIG_COMBO ? H5_TRIG_SEQUENCE : H5_TRIG_COMBO;
+            sc->combo = 0;
+            sc->len = 0;
+            shortcuts_changed(ui);
+            break;
+        case R_RECORD: start_capture(ui); break;
+        case R_CONFIRM: sc->confirm = (uint8_t)(((int)sc->confirm + 1) % 3); shortcuts_changed(ui); break;
+        case R_SAVE: shortcuts_changed(ui); go(ui, S_SHORTCUTS); break;
+        }
+    }
+    if (k & H5_KEY_SQUARE) start_capture(ui);
+}
+
+static void update_capture(H5Ui *ui)
+{
+    H5Shortcut *sc = editing(ui);
+    uint32_t held = btn_from_keys(ui->held);
+    if (!sc) {
+        go(ui, S_SHORTCUTS);
+        return;
+    }
+    ui->dirty = 1;
+    if (!ui->cap_armed) {
+        /* don't record the buttons that opened the capture: wait for them to be let go */
+        if (!held) ui->cap_armed = 1;
+        ui->cap_prev = held;
+        ui->cap_last = ui->now;
+        return;
+    }
+    if (ui->cap_mode == H5_TRIG_COMBO) {
+        if (h5_btn_count(held) > h5_btn_count(ui->cap_held_max)) ui->cap_held_max = held;
+        if (held) ui->cap_last = ui->now;
+        if (!held && h5_btn_count(ui->cap_held_max) >= 2) {
+            sc->mode = H5_TRIG_COMBO;
+            sc->combo = ui->cap_held_max;
+            sc->len = (uint8_t)h5_btn_count(sc->combo);
+            shortcuts_changed(ui);
+            go(ui, S_SHORTCUT);
+            return;
+        }
+        if (!held) ui->cap_held_max = 0;   /* let go with too few: start the combo over */
+    } else {
+        uint32_t fresh = held & ~ui->cap_prev;
+        if (fresh) {
+            uint32_t one[H5_SEQ_MAX];
+            int n = h5_combo_buttons(fresh, one, H5_SEQ_MAX);
+            for (int i = 0; i < n && ui->cap_len < H5_SEQ_MAX; i++) ui->cap_seq[ui->cap_len++] = one[i];
+            ui->cap_last = ui->now;
+        }
+        ui->cap_prev = held;
+        if (ui->cap_len >= 2 && ui->now - ui->cap_last > 1300) {
+            sc->mode = H5_TRIG_SEQUENCE;
+            sc->len = (uint8_t)ui->cap_len;
+            for (int i = 0; i < ui->cap_len; i++) sc->seq[i] = ui->cap_seq[i];
+            sc->combo = 0;
+            shortcuts_changed(ui);
+            go(ui, S_SHORTCUT);
+            return;
+        }
+    }
+    if (ui->cap_len == 0 && !ui->cap_held_max && ui->now - ui->cap_last > 6000) go(ui, S_SHORTCUT);
+}
+
 int h5_ui_update(H5Ui *ui, const H5Input *input)
 {
     uint32_t k = input ? input->pressed : 0;
     ui->now = ui->platform.clock_ms ? ui->platform.clock_ms() : 0;
+    ui->held = input ? input->held : 0;
 
     if (ui->ask != A_NONE) return ui->dirty;   /* the keyboard is open */
     if (ui->screen == S_BUSY) {
@@ -1351,6 +1667,9 @@ int h5_ui_update(H5Ui *ui, const H5Input *input)
     case S_ABOUT:
         if (k & (back_key(ui) | accept_key(ui))) go(ui, S_MENU);
         break;
+    case S_SHORTCUTS: update_shortcuts(ui, k); break;
+    case S_SHORTCUT: update_shortcut(ui, k); break;
+    case S_CAPTURE: update_capture(ui); break;
     case S_BUSY: break;
     }
     int dirty = ui->dirty;
@@ -2037,10 +2356,13 @@ static void menu_screen(H5Ui *ui, H5Canvas *c)
 static void pick_screen(H5Ui *ui, H5Canvas *c)
 {
     const H5Room *room = current_room(ui);
+    const H5Shortcut *sc = editing(ui);
     char title[200];
-    snprintf(title, sizeof(title), "Add to %s", room ? room->name : "");
+    if (ui->pick_for) h5_copy(title, sizeof(title), "What it runs");
+    else snprintf(title, sizeof(title), "Add to %s", room ? room->name : "");
     float x = drawer(ui, c, title);
     if (ui->pick_query[0]) snprintf(title, sizeof(title), "Searching for “%s”: %d found", ui->pick_query, ui->pick_count);
+    else if (ui->pick_for) h5_copy(title, sizeof(title), "A scene, a script or a device. By their area in Home Assistant.");
     else snprintf(title, sizeof(title), "✓ is in %s. By their area in Home Assistant.", room ? room->name : "the room");
     h5_text(c, &ui->fonts, H5_FACE_SMALL, (int)x + 64, 178, ui->pick_query[0] ? C_ACCENT_TEXT : C_DIM, title, 820 - 128, 0);
     /* the kinds (L2 / R2), the ones Home Assistant has; scrolled so the one shown fits */
@@ -2076,14 +2398,15 @@ static void pick_screen(H5Ui *ui, H5Canvas *c)
                 0, 0);
         fx += widths[i] + 10;
     }
-    for (int i = ui->pick_top; room && i < ui->pick_count && i < ui->pick_top + PICK_ROWS; i++) {
+    for (int i = ui->pick_top; (room || ui->pick_for) && i < ui->pick_count && i < ui->pick_top + PICK_ROWS; i++) {
         const H5Entity *e = &ui->ha.entities[ui->pick[i]];
         const H5Area *area = h5_ha_area(&ui->ha, e->area);
         char about[200], status[96];
+        int chosen = ui->pick_for ? (sc && !strcmp(sc->entity, e->id)) : in_room(ui, room, ui->pick[i]);
         h5_entity_status(e, ui->ha.temp_unit, status, sizeof(status));
         snprintf(about, sizeof(about), "%s%s%s", area ? area->name : "No area", status[0] ? " · " : "", status);
         drawer_row(ui, c, x, 262 + 86.0f * (float)(i - ui->pick_top), i == ui->pick_at, e->name, about,
-                   in_room(ui, room, ui->pick[i]) ? "✓" : "", C_GREEN);
+                   chosen ? "✓" : "", C_GREEN);
     }
     if (!ui->pick_count)
         h5_text(c, &ui->fonts, H5_FACE_TEXT, (int)x + 72, 320, C_DIM,
@@ -2167,6 +2490,247 @@ static void about_screen(H5Ui *ui, H5Canvas *c)
     hints(ui, c, (int)x + 72, (int)y + 690, list, 1);
 }
 
+/* ---- drawing: shortcuts ---------------------------------------------------------------------------------- */
+
+/* The text on a button's pill, or NULL for a face button (a circled symbol). */
+static const char *btn_pill_text(uint32_t mask)
+{
+    switch (mask) {
+    case H5BTN_L1: return "L1"; case H5BTN_R1: return "R1";
+    case H5BTN_L2: return "L2"; case H5BTN_R2: return "R2";
+    case H5BTN_L3: return "L3"; case H5BTN_R3: return "R3";
+    case H5BTN_OPTIONS: return "OPT"; case H5BTN_TOUCH: return "PAD";
+    case H5BTN_UP: return "Up"; case H5BTN_DOWN: return "Down";
+    case H5BTN_LEFT: return "Left"; case H5BTN_RIGHT: return "Right";
+    default: return NULL;
+    }
+}
+
+static int btn_width(H5Ui *ui, uint32_t mask)
+{
+    const char *p = btn_pill_text(mask);
+    return p ? h5_text_width(&ui->fonts, H5_FACE_KEY, p) + 22 : 36;
+}
+
+static int draw_btn(H5Ui *ui, H5Canvas *c, uint32_t mask, int x, int cy, uint32_t col)
+{
+    const char *p = btn_pill_text(mask);
+    if (p) {
+        int w = h5_text_width(&ui->fonts, H5_FACE_KEY, p) + 22;
+        h5_round_frame(c, (float)x, (float)cy - 18, (float)w, 36, 10, 2, col);
+        h5_text(c, &ui->fonts, H5_FACE_KEY, x + w / 2, cy + 7, col, p, 0, 1);
+        return w;
+    }
+    float r = 18, cx = (float)x + r, fy = (float)cy;
+    h5_ring(c, cx, fy, r, 2, col);
+    switch (mask) {
+    case H5BTN_CROSS:
+        h5_line(c, cx - 7, fy - 7, cx + 7, fy + 7, 2.6f, col);
+        h5_line(c, cx - 7, fy + 7, cx + 7, fy - 7, 2.6f, col);
+        break;
+    case H5BTN_CIRCLE: h5_ring(c, cx, fy, 8, 2.4f, col); break;
+    case H5BTN_SQUARE: h5_round_frame(c, cx - 7, fy - 7, 14, 14, 1.5f, 2.4f, col); break;
+    case H5BTN_TRIANGLE:
+        h5_line(c, cx, fy - 8, cx - 8, fy + 5.5f, 2.4f, col);
+        h5_line(c, cx - 8, fy + 5.5f, cx + 8, fy + 5.5f, 2.4f, col);
+        h5_line(c, cx + 8, fy + 5.5f, cx, fy - 8, 2.4f, col);
+        break;
+    default: break;
+    }
+    return (int)(2 * r);
+}
+
+static int trigger_width(H5Ui *ui, const H5Shortcut *sc)
+{
+    uint32_t keys[H5_SEQ_MAX];
+    int n, w = 0;
+    if (sc->len == 0) return h5_text_width(&ui->fonts, H5_FACE_BODY, "Not set");
+    n = sc->mode == H5_TRIG_SEQUENCE ? sc->len : h5_combo_buttons(sc->combo, keys, H5_SEQ_MAX);
+    for (int i = 0; i < n; i++) {
+        uint32_t m = sc->mode == H5_TRIG_SEQUENCE ? sc->seq[i] : keys[i];
+        w += (i ? 20 : 0) + btn_width(ui, m) + 8;
+    }
+    return w;
+}
+
+static void draw_trigger(H5Ui *ui, H5Canvas *c, const H5Shortcut *sc, int x, int cy, uint32_t col, uint32_t sep_col)
+{
+    uint32_t keys[H5_SEQ_MAX];
+    int n;
+    if (sc->len == 0) {
+        h5_text(c, &ui->fonts, H5_FACE_BODY, x, cy + 8, C_FAINT, "Not set", 0, 0);
+        return;
+    }
+    n = sc->mode == H5_TRIG_SEQUENCE ? sc->len : h5_combo_buttons(sc->combo, keys, H5_SEQ_MAX);
+    const char *sep = sc->mode == H5_TRIG_SEQUENCE ? ">" : "+";
+    for (int i = 0; i < n; i++) {
+        uint32_t m = sc->mode == H5_TRIG_SEQUENCE ? sc->seq[i] : keys[i];
+        if (i) {
+            h5_text(c, &ui->fonts, H5_FACE_LABEL, x + 5, cy + 8, sep_col, sep, 0, 0);
+            x += 20;
+        }
+        x += draw_btn(ui, c, m, x, cy, col) + 8;
+    }
+}
+
+static void shortcuts_screen(H5Ui *ui, H5Canvas *c)
+{
+    H5Shortcuts *s = &ui->shortcuts;
+    int count = s->count;
+    float x = MAIN_X;
+    char sub[80];
+    header(ui, c, "Shortcuts");
+    h5_text(c, &ui->fonts, H5_FACE_TITLE, (int)x, 214, C_TEXT, "Shortcuts", 0, 0);
+    h5_text(c, &ui->fonts, H5_FACE_TEXT, (int)x, 262, C_DIM,
+            "Fire a scene or a device from the controller while a game is running.", MAIN_W, 0);
+
+    /* the master switch */
+    float y = 300;
+    if (ui->sc_at == 0) h5_round_rect(c, x - 4, y - 4, MAIN_W + 8, 96, 22, C_FOCUS);
+    h5_round_rect(c, x, y, MAIN_W, 88, 18, C_PANEL);
+    h5_text(c, &ui->fonts, H5_FACE_LABEL, (int)x + 28, (int)y + 42, C_TEXT, "Background shortcuts", 0, 0);
+    snprintf(sub, sizeof(sub), count == 1 ? "%d set up" : "%d set up", count);
+    h5_text(c, &ui->fonts, H5_FACE_SMALL, (int)x + 28, (int)y + 70, C_FAINT, s->enabled ? sub : "Off", 0, 0);
+    h5_round_rect(c, x + MAIN_W - 104, y + 22, 84, 44, 22, s->enabled ? C_ACCENT : C_TRACK);
+    h5_circle(c, s->enabled ? x + MAIN_W - 48 : x + MAIN_W - 82, y + 44, 17, 0xffffffffu);
+
+    /* the shortcuts, then Add, scrolled so the focused one fits */
+    enum { VIS = 6, ROWH = 92, GAP = 14 };
+    float ry = y + 112;
+    int first = ui->sc_top < 1 ? 1 : ui->sc_top;
+    if (ui->sc_at >= 1) {
+        if (ui->sc_at < first) first = ui->sc_at;
+        if (ui->sc_at >= first + VIS) first = ui->sc_at - VIS + 1;
+    }
+    ui->sc_top = first;
+    for (int r = first; r <= count + 1 && r < first + VIS; r++) {
+        float ty = ry + (float)(r - first) * (ROWH + GAP);
+        int foc = ui->sc_at == r;
+        if (r > count) {
+            /* Add */
+            h5_round_frame(c, x, ty, MAIN_W, 72, 16, foc ? 2 : 2, foc ? C_FOCUS : C_TRACK);
+            int tw = h5_text_width(&ui->fonts, H5_FACE_LABEL, "Add shortcut");
+            float ax = x + (MAIN_W - tw - 36) / 2;
+            h5_line(c, ax + 11, ty + 36, ax + 25, ty + 36, 2.4f, foc ? C_TEXT : C_DIM);
+            h5_line(c, ax + 18, ty + 29, ax + 18, ty + 43, 2.4f, foc ? C_TEXT : C_DIM);
+            h5_text(c, &ui->fonts, H5_FACE_LABEL, (int)ax + 36, (int)ty + 46, foc ? C_TEXT : C_DIM, "Add shortcut", 0, 0);
+            continue;
+        }
+        const H5Shortcut *sc = &s->items[r - 1];
+        if (foc) h5_round_rect(c, x - 4, ty - 4, MAIN_W + 8, ROWH + 8, 20, C_FOCUS);
+        h5_round_rect(c, x, ty, MAIN_W, ROWH, 16, foc ? C_CARD_ON : C_CARD);
+        h5_text(c, &ui->fonts, H5_FACE_CARD, (int)x + 28, (int)ty + 42, C_TEXT, sc->name[0] ? sc->name : "(unnamed)",
+                MAIN_W / 2, 0);
+        h5_text(c, &ui->fonts, H5_FACE_BODY, (int)x + 28, (int)ty + 74, C_FAINT, sc->label[0] ? sc->label : "No action yet",
+                MAIN_W / 2, 0);
+        int tw = trigger_width(ui, sc);
+        draw_trigger(ui, c, sc, (int)(x + MAIN_W - 28 - tw), (int)ty + ROWH / 2, sc->len ? C_AMBER : C_FAINT, C_FAINT);
+    }
+    Hint list[3];
+    int n = 0;
+    list[n++] = (Hint){ accept_glyph(ui), ui->sc_at == 0 ? "Turn on / off" : ui->sc_at <= count ? "Edit" : "Add" };
+    if (ui->sc_at >= 1 && ui->sc_at <= count) list[n++] = (Hint){ G_SQUARE, "Delete" };
+    list[n++] = (Hint){ back_glyph(ui), "Done" };
+    hints(ui, c, MARGIN, 1012, list, n);
+}
+
+static void seg_ctl(H5Ui *ui, H5Canvas *c, float x, float y, const char *const *labels, int n, int sel, int focus)
+{
+    float px = x;
+    for (int i = 0; i < n; i++) {
+        float w = (float)h5_text_width(&ui->fonts, H5_FACE_LABEL, labels[i]) + 56;
+        int on = i == sel;
+        if (focus && on) h5_round_frame(c, px - 4, y - 4, w + 8, 64, 32, 3, C_FOCUS);
+        h5_round_rect(c, px, y, w, 56, 28, on ? C_ACCENT : C_CARD);
+        h5_text(c, &ui->fonts, H5_FACE_LABEL, (int)(px + w / 2), (int)y + 37, on ? 0xff08101fu : C_SOFT, labels[i], 0, 1);
+        px += w + 14;
+    }
+}
+
+static void sc_field(H5Ui *ui, H5Canvas *c, float x, float y, float w, const char *label, const char *value,
+                     const char *placeholder, int focus)
+{
+    h5_text(c, &ui->fonts, H5_FACE_CAPS, (int)x, (int)y, C_FAINT, label, 0, 0);
+    if (focus) h5_round_rect(c, x - 4, y + 16, w + 8, 76, 18, C_FOCUS);
+    h5_round_rect(c, x, y + 20, w, 68, 14, C_CARD_ON);
+    h5_text(c, &ui->fonts, H5_FACE_TEXT, (int)x + 24, (int)y + 64, value[0] ? C_TEXT : C_FAINT, value[0] ? value : placeholder,
+            (int)w - 48, 0);
+}
+
+static void shortcut_screen(H5Ui *ui, H5Canvas *c)
+{
+    H5Shortcut *sc = editing(ui);
+    static const char *const types[] = { "Hold together", "Sequence" };
+    static const char *const fbs[] = { "Light bar", "Notification", "Both" };
+    float Wc = 1160, x = (W - Wc) / 2.0f;
+    header(ui, c, "Shortcuts");
+    if (!sc) return;
+
+    sc_field(ui, c, x, 184, Wc, "NAME", sc->name, "Name it", ui->sc_row == R_NAME);
+    sc_field(ui, c, x, 304, Wc, "WHAT IT DOES", sc->label, "Choose a scene, a script or a device", ui->sc_row == R_ACTION);
+
+    h5_text(c, &ui->fonts, H5_FACE_CAPS, (int)x, 436, C_FAINT, "TRIGGER", 0, 0);
+    seg_ctl(ui, c, x, 460, types, 2, sc->mode, ui->sc_row == R_TYPE);
+
+    int foc = ui->sc_row == R_RECORD;
+    if (foc) h5_round_rect(c, x - 4, 556, Wc + 8, 96, 20, C_FOCUS);
+    h5_round_rect(c, x, 560, Wc, 88, 16, C_CARD);
+    draw_trigger(ui, c, sc, (int)x + 24, 604, sc->len ? C_AMBER : C_FAINT, C_FAINT);
+    h5_text(c, &ui->fonts, H5_FACE_SMALL, (int)x + (int)Wc - 24, 604, C_DIM, "Square to record", 0, 2);
+
+    h5_text(c, &ui->fonts, H5_FACE_CAPS, (int)x, 684, C_FAINT, "CONFIRM WHEN IT FIRES", 0, 0);
+    seg_ctl(ui, c, x, 708, fbs, 3, sc->confirm, ui->sc_row == R_CONFIRM);
+
+    foc = ui->sc_row == R_SAVE;
+    if (foc) h5_round_rect(c, x - 4, 816, 300, 72, 36, C_FOCUS);
+    h5_round_rect(c, x, 820, 292, 64, 32, C_ACCENT);
+    h5_text(c, &ui->fonts, H5_FACE_CARD, (int)x + 146, 862, 0xff08101fu, "Done", 0, 1);
+
+    Hint list[] = { { accept_glyph(ui), ui->sc_row == R_ACTION ? "Choose" : ui->sc_row == R_NAME ? "Rename" : "Choose" },
+                    { G_SQUARE, "Record buttons" }, { back_glyph(ui), "Save" } };
+    hints(ui, c, MARGIN, 1012, list, 3);
+}
+
+static void capture_screen(H5Ui *ui, H5Canvas *c)
+{
+    H5Shortcut *sc = editing(ui);
+    int combo = ui->cap_mode == H5_TRIG_COMBO;
+    H5Shortcut live;
+    float cw = 1120, cx = (W - cw) / 2.0f, cy = 250;
+    (void)sc;
+    dim(c, 180);
+    h5_shadow(c, cx, cy, cw, 560, 28, 40, 0x90000000u);
+    h5_round_rect(c, cx, cy, cw, 560, 28, C_PANEL);
+    h5_circle(c, cx + 52, cy + 64, 7, C_WARN);
+    h5_text(c, &ui->fonts, H5_FACE_CAPS, (int)cx + 72, (int)cy + 72, C_WARN, "RECORDING", 0, 0);
+    h5_text(c, &ui->fonts, H5_FACE_TITLE, (int)(cx + cw / 2), (int)cy + 170, C_TEXT,
+            combo ? "Hold the buttons together" : "Press the buttons in order", 0, 1);
+    h5_text(c, &ui->fonts, H5_FACE_TEXT, (int)(cx + cw / 2), (int)cy + 224, C_DIM,
+            !ui->cap_armed ? "Let go of the buttons to start"
+                           : combo ? "Hold two or more, then let go to set them" : "Press each one; pause when you're done",
+            (int)cw - 120, 1);
+
+    memset(&live, 0, sizeof(live));
+    live.mode = ui->cap_mode;
+    if (combo) {
+        uint32_t now_held = ui->cap_armed ? btn_from_keys(ui->held) : 0;
+        live.combo = ui->cap_held_max | now_held;
+        live.len = (uint8_t)h5_btn_count(live.combo);
+    } else {
+        live.len = (uint8_t)ui->cap_len;
+        for (int i = 0; i < ui->cap_len; i++) live.seq[i] = ui->cap_seq[i];
+    }
+    if (live.len) {
+        int tw = trigger_width(ui, &live);
+        draw_trigger(ui, c, &live, (int)(cx + (cw - tw) / 2), (int)cy + 340, C_AMBER, C_FAINT);
+    } else {
+        h5_text(c, &ui->fonts, H5_FACE_HEAD, (int)(cx + cw / 2), (int)cy + 352, C_FAINT, "…", 0, 1);
+    }
+    h5_round_rect(c, cx + 80, cy + 440, cw - 160, 72, 16, C_CARD);
+    h5_text(c, &ui->fonts, H5_FACE_BODY, (int)(cx + cw / 2), (int)cy + 484, C_SOFT,
+            "Tip: keep L3 + R3 (both sticks) in it so a game never fires it by accident.", (int)cw - 220, 1);
+}
+
 void h5_ui_draw(H5Ui *ui, H5Canvas *canvas)
 {
     if (!ui->fonts_ok) {
@@ -2188,6 +2752,7 @@ void h5_ui_draw(H5Ui *ui, H5Canvas *canvas)
     case S_PICK:
         if (ui->menu_from == S_LIGHT && ui->screen == S_MENU) light_screen(ui, canvas);
         else if (ui->menu_from == S_CLIMATE && ui->screen == S_MENU) climate_screen(ui, canvas);
+        else if (ui->screen == S_PICK && ui->pick_for) shortcut_screen(ui, canvas);
         else home_screen(ui, canvas);
         if (ui->screen == S_MENU) menu_screen(ui, canvas);
         else pick_screen(ui, canvas);
@@ -2200,6 +2765,12 @@ void h5_ui_draw(H5Ui *ui, H5Canvas *canvas)
     case S_ABOUT:
         home_screen(ui, canvas);
         about_screen(ui, canvas);
+        break;
+    case S_SHORTCUTS: shortcuts_screen(ui, canvas); break;
+    case S_SHORTCUT: shortcut_screen(ui, canvas); break;
+    case S_CAPTURE:
+        shortcut_screen(ui, canvas);
+        capture_screen(ui, canvas);
         break;
     }
     toast_line(ui, canvas);
@@ -2245,6 +2816,9 @@ H5Ui *h5_ui_create(const H5Platform *platform, const char *fonts_path)
         return NULL;
     }
     h5_layout_load(ui->layout, ui->path_layout);
+    h5_join(ui->path_shortcuts, sizeof(ui->path_shortcuts), platform->data_dir, "shortcuts.txt");
+    h5_shortcuts_load(&ui->shortcuts, ui->path_shortcuts);
+    ui->sc_edit = -1;
     h5_ha_init(&ui->ha);
     ui->ha.clock_ms = platform->clock_ms;
     ui->ha.now = platform->unix_time;

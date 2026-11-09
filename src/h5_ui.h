@@ -15,6 +15,8 @@ enum {
     H5_KEY_UP = 1u << 0, H5_KEY_DOWN = 1u << 1, H5_KEY_LEFT = 1u << 2, H5_KEY_RIGHT = 1u << 3,
     H5_KEY_CROSS = 1u << 4, H5_KEY_CIRCLE = 1u << 5, H5_KEY_TRIANGLE = 1u << 6, H5_KEY_SQUARE = 1u << 7,
     H5_KEY_OPTIONS = 1u << 8, H5_KEY_L1 = 1u << 9, H5_KEY_R1 = 1u << 10, H5_KEY_L2 = 1u << 11, H5_KEY_R2 = 1u << 12,
+    /* only the shortcut capture screen uses these */
+    H5_KEY_L3 = 1u << 13, H5_KEY_R3 = 1u << 14, H5_KEY_TOUCH = 1u << 15,
 };
 
 /* What the keyboard is for: names get capitals; the rest is typed as it is. */
@@ -22,6 +24,7 @@ enum { H5_TEXT_NAME, H5_TEXT_PASSWORD, H5_TEXT_USERNAME, H5_TEXT_ADDRESS, H5_TEX
 
 typedef struct H5Input {
     uint32_t pressed;
+    uint32_t held;       /* the buttons down this frame (the capture screen reads them) */
 } H5Input;
 
 typedef struct H5Platform {
@@ -38,6 +41,7 @@ typedef struct H5Platform {
     int circle_accepts;           /* Japanese-style confirm */
     const char *data_dir;         /* writable: the account, the layout, the settings */
     const char *const *usb_roots; /* where home5.txt (a long-lived token) may be; NULL ends */
+    const char *reader_dir;       /* a folder a PS5 payload can read, for the background shortcuts' config (NULL: none) */
 } H5Platform;
 
 typedef struct H5Ui H5Ui;

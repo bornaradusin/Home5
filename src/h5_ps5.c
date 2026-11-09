@@ -93,9 +93,9 @@ int scePadSetLightBar(int32_t handle, const LightBar *light);
 int scePadResetLightBar(int32_t handle);
 int scePadSetTriggerEffect(int32_t handle, const TriggerParam *param);
 enum {
-    PAD_OPTIONS = 0x8u, PAD_UP = 0x10u, PAD_RIGHT = 0x20u, PAD_DOWN = 0x40u, PAD_LEFT = 0x80u, PAD_L2 = 0x100u,
-    PAD_R2 = 0x200u, PAD_L1 = 0x400u, PAD_R1 = 0x800u, PAD_TRIANGLE = 0x1000u, PAD_CIRCLE = 0x2000u,
-    PAD_CROSS = 0x4000u, PAD_SQUARE = 0x8000u,
+    PAD_L3 = 0x2u, PAD_R3 = 0x4u, PAD_OPTIONS = 0x8u, PAD_UP = 0x10u, PAD_RIGHT = 0x20u, PAD_DOWN = 0x40u,
+    PAD_LEFT = 0x80u, PAD_L2 = 0x100u, PAD_R2 = 0x200u, PAD_L1 = 0x400u, PAD_R1 = 0x800u, PAD_TRIANGLE = 0x1000u,
+    PAD_CIRCLE = 0x2000u, PAD_CROSS = 0x4000u, PAD_SQUARE = 0x8000u, PAD_TOUCH = 0x100000u,
 };
 #define PAD_INTERCEPTED 0x80000000u   /* the system has the controller */
 
@@ -485,7 +485,8 @@ static uint32_t read_pad(void)
         { PAD_UP, H5_KEY_UP }, { PAD_DOWN, H5_KEY_DOWN }, { PAD_LEFT, H5_KEY_LEFT }, { PAD_RIGHT, H5_KEY_RIGHT },
         { PAD_CROSS, H5_KEY_CROSS }, { PAD_CIRCLE, H5_KEY_CIRCLE }, { PAD_TRIANGLE, H5_KEY_TRIANGLE },
         { PAD_SQUARE, H5_KEY_SQUARE }, { PAD_OPTIONS, H5_KEY_OPTIONS }, { PAD_L1, H5_KEY_L1 }, { PAD_R1, H5_KEY_R1 },
-        { PAD_L2, H5_KEY_L2 }, { PAD_R2, H5_KEY_R2 },
+        { PAD_L2, H5_KEY_L2 }, { PAD_R2, H5_KEY_R2 }, { PAD_L3, H5_KEY_L3 }, { PAD_R3, H5_KEY_R3 },
+        { PAD_TOUCH, H5_KEY_TOUCH },
     };
     for (size_t i = 0; i < sizeof(map) / sizeof(map[0]); i++)
         if (b & map[i].pad) held |= map[i].key;
@@ -676,7 +677,7 @@ int main(void)
     if (!canvas.px) halt("Home5 is out of memory.");
 
     const H5Platform platform = { NULL, clock_ms, unix_time, time_zone * 60 + (summer ? 3600 : 0), keyboard, notify,
-                                  log_line, enter == 0, data_dir, usb_roots };
+                                  log_line, enter == 0, data_dir, usb_roots, "/data/homebrew/" H5_TITLE_ID };
     the_ui = h5_ui_create(&platform, "/app0/assets/fonts.bin");
     if (!the_ui) halt("Home5 is out of memory.");
 
@@ -684,7 +685,8 @@ int main(void)
     for (int first = 1;; first = 0) {
         uint64_t now = clock_ms();
         open_pad(now);
-        H5Input input = { pressed_keys(read_pad(), now) };
+        uint32_t held = read_pad();
+        H5Input input = { pressed_keys(held, now), held };
         keyboard_poll();
         int dirty = h5_ui_update(the_ui, &input);
         controller(the_ui);

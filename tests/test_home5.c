@@ -10,6 +10,7 @@
 #include "h5_json.h"
 #include "h5_layout.h"
 #include "h5_net.h"
+#include "h5_shortcuts.h"
 #include "h5_ui.h"
 
 #include <arpa/inet.h>
@@ -482,7 +483,15 @@ static H5Canvas canvas;
 
 static void frame(H5Ui *ui, uint32_t keys)
 {
-    H5Input input = { keys };
+    H5Input input = { keys, 0 };
+    h5_ui_update(ui, &input);
+    h5_ui_draw(ui, &canvas);
+}
+
+/* A frame with buttons held (no edges): for recording a shortcut's combo. */
+static void frame_held(H5Ui *ui, uint32_t held)
+{
+    H5Input input = { 0, held };
     h5_ui_update(ui, &input);
     h5_ui_draw(ui, &canvas);
 }
@@ -543,13 +552,65 @@ static int pixel_near(int x, int y, uint32_t want)
     return abs(dr) < 12 && abs(dg) < 12 && abs(db) < 12;
 }
 
+static void test_shortcuts(void)
+{
+    char dir[200], file[280];
+    H5Shortcuts s, s2;
+    snprintf(dir, sizeof(dir), "%s/sc", work);
+    h5_mkdirs(dir);
+    snprintf(file, sizeof(file), "%s/shortcuts.txt", dir);
+
+    h5_shortcuts_reset(&s);
+    CHECK(s.enabled && s.count == 0, "shortcuts start empty, master on");
+    CHECK(h5_btn_count(H5BTN_L3 | H5BTN_R3 | H5BTN_SQUARE) == 3 && !strcmp(h5_btn_name(H5BTN_L3), "L3") &&
+          !strcmp(h5_btn_name(H5BTN_SQUARE), "SQUARE"), "button helpers");
+
+    int a = h5_shortcuts_add(&s, "Movie lights", "scene.movie", "scene", "turn_on", "", "Scene · Movie night");
+    CHECK(a == 0, "a shortcut added");
+    s.items[a].mode = H5_TRIG_COMBO;
+    s.items[a].combo = H5BTN_L3 | H5BTN_R3 | H5BTN_SQUARE;
+    s.items[a].len = (uint8_t)h5_btn_count(s.items[a].combo);
+
+    int b = h5_shortcuts_add(&s, "Goodnight", "script.night", "script", "turn_on", "", "Script · Goodnight");
+    s.items[b].mode = H5_TRIG_SEQUENCE;
+    s.items[b].seq[0] = H5BTN_CIRCLE;
+    s.items[b].seq[1] = H5BTN_CIRCLE;
+    s.items[b].seq[2] = H5BTN_TRIANGLE;
+    s.items[b].len = 3;
+    s.items[b].confirm = H5_FB_NOTIFY;
+
+    CHECK(!h5_shortcuts_save(&s, file) && !h5_shortcuts_load(&s2, file), "saved and loaded back");
+    CHECK(s2.count == 2 && s2.enabled, "two shortcuts, master on");
+    CHECK(!strcmp(s2.items[0].name, "Movie lights") && !strcmp(s2.items[0].entity, "scene.movie") &&
+          !strcmp(s2.items[0].domain, "scene") && s2.items[0].mode == H5_TRIG_COMBO &&
+          s2.items[0].combo == (uint32_t)(H5BTN_L3 | H5BTN_R3 | H5BTN_SQUARE), "combo round-trips");
+    CHECK(s2.items[1].mode == H5_TRIG_SEQUENCE && s2.items[1].len == 3 && s2.items[1].seq[0] == H5BTN_CIRCLE &&
+          s2.items[1].seq[2] == H5BTN_TRIANGLE && s2.items[1].confirm == H5_FB_NOTIFY, "sequence round-trips");
+
+    CHECK(!h5_shortcuts_write_reader(&s, dir, "https://ha.local:8123", "AT-123", "RT-9", 0, ""), "reader config written");
+    snprintf(file, sizeof(file), "%s/shortcuts.cfg", dir);
+    H5Buf cfg = { 0 };
+    CHECK(h5_is_file(file) && !h5_read_file(file, &cfg, 64 * 1024), "shortcuts.cfg read");
+    CHECK(cfg.data && strstr((char *)cfg.data, "access = AT-123") && strstr((char *)cfg.data, "url = https://ha.local:8123") &&
+          strstr((char *)cfg.data, "0x8006") && strstr((char *)cfg.data, "scene | turn_on | scene.movie"),
+          "cfg carries the token and a shortcut");
+    h5_buf_free(&cfg);
+
+    s.enabled = 0;
+    CHECK(!h5_shortcuts_write_reader(&s, dir, "https://ha.local:8123", "AT-123", "", 0, "") && !h5_is_file(file),
+          "the reader config is cleared when the master switch is off");
+
+    h5_shortcuts_delete(&s, 0);
+    CHECK(s.count == 1 && !strcmp(s.items[0].name, "Goodnight"), "delete removes the right one");
+}
+
 static void test_screens(void)
 {
     char data[600], address[100];
     static const char *const usb[] = { NULL, NULL };
     snprintf(data, sizeof(data), "%s/ui", work);
     url(address, sizeof(address), 0, plain_port);
-    H5Platform platform = { NULL, host_clock, host_time, 3600, fake_keyboard, notified, host_log, 0, data, usb };
+    H5Platform platform = { NULL, host_clock, host_time, 3600, fake_keyboard, notified, host_log, 0, data, usb, NULL };
     canvas.w = 1920;
     canvas.h = 1080;
     canvas.stride = 1920;
@@ -856,6 +917,45 @@ static void test_screens(void)
     frame(ui, H5_KEY_CROSS);
     CHECK(!strcmp(h5_ui_screen(ui), "home") && l->room_count == 2 && h5_ui_view(ui)->room_count == 2 &&
               !strcmp(l->rooms[1].name, "Living room"), "✕ deletes it: %d rooms", l->room_count);
+
+    /* Shortcuts: from the menu, a combo that runs a scene while a game is on. */
+    while (strcmp(h5_ui_screen(ui), "home")) frame(ui, H5_KEY_CIRCLE);
+    frame(ui, H5_KEY_OPTIONS);
+    for (int i = 0; i < 20 && strcmp(h5_ui_menu_line(ui), "Shortcuts"); i++) frame(ui, H5_KEY_DOWN);
+    CHECK(!strcmp(h5_ui_menu_line(ui), "Shortcuts"), "Shortcuts in the menu: %s", h5_ui_menu_line(ui));
+    frame(ui, H5_KEY_CROSS);
+    CHECK(!strcmp(h5_ui_screen(ui), "shortcuts"), "the shortcuts list: %s", h5_ui_screen(ui));
+    shot("15-shortcuts-empty");
+    frame(ui, H5_KEY_DOWN);    /* the Add row */
+    frame(ui, H5_KEY_CROSS);
+    CHECK(!strcmp(h5_ui_screen(ui), "shortcut"), "the editor opened: %s", h5_ui_screen(ui));
+    shot("16-shortcut-editor");
+    frame(ui, H5_KEY_DOWN);    /* What it does */
+    frame(ui, H5_KEY_CROSS);
+    CHECK(!strcmp(h5_ui_screen(ui), "pick"), "picking the action: %s", h5_ui_screen(ui));
+    CHECK(pick_to(ui, "scene.movie"), "the Movie night scene is offered");
+    frame(ui, H5_KEY_CROSS);
+    CHECK(!strcmp(h5_ui_screen(ui), "shortcut"), "back in the editor with an action");
+    quiet(ui);
+    shot("17-shortcut-action");
+    frame(ui, H5_KEY_SQUARE);  /* record */
+    CHECK(!strcmp(h5_ui_screen(ui), "capture"), "recording: %s", h5_ui_screen(ui));
+    frame_held(ui, 0);         /* arm (let go of Square) */
+    frame_held(ui, H5_KEY_L3 | H5_KEY_R3 | H5_KEY_SQUARE);
+    frame_held(ui, H5_KEY_L3 | H5_KEY_R3 | H5_KEY_SQUARE);
+    shot("18-capture");
+    frame_held(ui, 0);         /* let go: the combo is set */
+    CHECK(!strcmp(h5_ui_screen(ui), "shortcut"), "the combo was recorded");
+    char scfile[760];
+    snprintf(scfile, sizeof(scfile), "%s/shortcuts.txt", data);
+    H5Buf sb = { 0 };
+    CHECK(!h5_read_file(scfile, &sb, 64 * 1024) && sb.data && strstr((char *)sb.data, "L3+R3+SQUARE") &&
+          strstr((char *)sb.data, "scene.movie"), "the shortcut is saved with its combo");
+    h5_buf_free(&sb);
+    frame(ui, H5_KEY_CIRCLE);  /* done */
+    CHECK(!strcmp(h5_ui_screen(ui), "shortcuts"), "back at the list with the shortcut");
+    shot("19-shortcuts-list");
+
     h5_ui_destroy(ui);
 
     /* Started again: connects by itself with the kept account, and the rooms are still there. */
@@ -911,6 +1011,7 @@ int main(int argc, char **argv)
         test_refusals();
         test_client(0);
         test_layout();
+        test_shortcuts();
         test_screens();
         printf("test_home5: %d checks, %d failed\n", checks, failures);
     }
