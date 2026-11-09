@@ -201,7 +201,8 @@ step_package() {
     (cd "$here" && if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         git ls-files -z --cached --others --exclude-standard
     else   # from a source package: all but what the build makes
-        find . -type f -not -path './.build/*' -not -path './release/*' -not -path '*/__pycache__/*' -printf '%P\0'
+        find . -type f -not -path './.build/*' -not -path './release/*' -not -path '*/__pycache__/*' \
+            -not -path './reader/deps/*' -not -path './reader/out/*' -not -path './reader/obj/*' -printf '%P\0'
     fi | xargs -0 cp --parents -t "$stage/$name")
     (cd "$stage" && zip -qrX "$out/$name-source.zip" "$name")
     # Everything the app is built from.
