@@ -50,7 +50,7 @@ PY
 # The loader: the injector (overlay/shsrv, unchanged), Home5's Home Assistant client, and our code.
 cflags=(-DPS5 -fPIC -fPIE -ffunction-sections -fdata-sections -march=znver2 -O2 -Wall -Wextra
         -I"$vendor" -I"$deps/shsrv" -I"$h5src" -I"$mbedtls_inc")
-mbed=(-DMBEDTLS_USER_CONFIG_FILE="h5_mbedtls_config.h")
+mbed=('-DMBEDTLS_USER_CONFIG_FILE="h5_mbedtls_config.h"')
 "$CC"  "${cflags[@]}" -Wno-unused-parameter -c "$vendor/stable_elfldr_bridge.c" -o "$obj/bridge.o"
 "$CC"  "${cflags[@]}" -Wno-unused-parameter -c "$deps/shsrv/pt.c" -o "$obj/pt.o"
 "$CC"  "${cflags[@]}" -std=c11 -c "$h5src/h5_base.c" -o "$obj/h5_base.o"
