@@ -35,6 +35,17 @@ allows them to be part of this GPL-3.0-or-later program.
 `PPSA11019-sources.tar.xz`, with every release, has Home5's source, the boilerplate at
 its commit, the Mbed TLS release, and `PARTS.txt`, which says where the rest comes from.
 
+## The background shortcuts reader (`reader/`)
+
+The reader (`PPSA11019-reader.elf`) is the part that reads the controller while a game runs. It
+is built on **EnriqueWood's proof of concept** for Home5's background shortcuts (GPL-3.0-or-later).
+Its `SceShellUI` injector is used **unchanged** from the **PS5 DualSense overlay**,
+`https://github.com/erickdavestech/ps5-dualsense-overlay` (commit `e1de419`), derived from
+**Common FPS for PS5** (porhe911); the ptrace and ELF-loader helpers are from **shsrv**,
+`https://github.com/ps5-payload-dev/shsrv` (commit `6f32063`), by John Törnblom. All
+GPL-3.0-or-later and fetched at build time (`reader/pins.sh`). The reader reuses Home5's own
+Home Assistant client (`src/h5_net.c`) and Mbed TLS for its REST call.
+
 ## Home Assistant
 
 Home5 talks to Home Assistant through its documented sign-in (`/auth/login_flow`,

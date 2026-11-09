@@ -90,5 +90,6 @@ jobs:
           esac
           gh release create "$tag" --draft $pre --target "$GITHUB_SHA" --title "Home5 $VERSION" \
             --notes-file "release-notes/$VERSION.md" \
-            "$app" release/Home5-*-source.zip release/PPSA11019-sources.tar.xz release/SHA256SUMS.txt
+            "$app" release/PPSA11019-reader.elf release/Home5-*-source.zip release/PPSA11019-sources.tar.xz \
+            release/SHA256SUMS.txt
           echo "::notice title=Draft release::Home5 $VERSION is ready to check and publish"

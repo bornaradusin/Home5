@@ -180,6 +180,16 @@ PY
     find "$app" -type f -printf '%10s %P\n' | sort -k2
 }
 
+# The background-shortcuts reader (reader/): the SceShellUI thread and the payload that injects it and
+# calls Home Assistant. Built with the payload SDK and the console mbedTLS already built above.
+step_reader() {
+    PS5_PAYLOAD_SDK="$sdk" H5_SRC="$here/src" \
+        MBEDTLS_LIB="$bp/vendor/lib/libmbedtls.a" MBEDTLS_INC="$bp/vendor/mbedtls/include" \
+        bash "$here/reader/build.sh"
+    cp "$here/reader/out/reader.elf" "$out/$TITLE_ID-reader.elf"
+    ls -l "$here/reader/out/"*.elf
+}
+
 step_package() {
     local stage=$B/package name=Home5-$version
     rm -rf "$stage" && mkdir -p "$stage"
@@ -224,7 +234,7 @@ In the app's assets/:
                             ca-certificates $(dpkg-query -W -f='${Version}' ca-certificates 2>/dev/null || echo '?') package
 EOF
     (cd "$stage" && tar --sort=name --owner=0 --group=0 --numeric-owner -cJf "$out/$TITLE_ID-sources.tar.xz" "$TITLE_ID-sources")
-    (cd "$out" && sha256sum "$TITLE_ID.zip" "$TITLE_ID-sources.tar.xz" "$name-source.zip" > SHA256SUMS.txt && cat SHA256SUMS.txt)
+    (cd "$out" && sha256sum "$TITLE_ID.zip" "$TITLE_ID-reader.elf" "$TITLE_ID-sources.tar.xz" "$name-source.zip" > SHA256SUMS.txt && cat SHA256SUMS.txt)
 }
 
 echo "Home5 $version ($TITLE_ID, under Media)"
@@ -234,5 +244,6 @@ run app step_app
 run stub step_stub
 run compile step_compile
 run check step_check
+run reader step_reader
 run package step_package
 ls -l "$out"
