@@ -109,6 +109,7 @@ struct H5Ui {
     /* controller shortcuts */
     H5Shortcuts shortcuts;
     char path_shortcuts[H5_PATH];
+    int reader_warn;          /* the last write to the reader's folder failed (a game has unmounted /data) */
     int sc_at, sc_top;        /* the list: 0 is the master switch, 1..count the shortcuts, then Add */
     int sc_edit, sc_row;      /* the shortcut being edited, and the focused field */
     int pick_for;             /* S_PICK: 0 a room, 1 a shortcut's action */
@@ -541,8 +542,9 @@ static void shortcuts_write_reader(H5Ui *ui)
     char url[400];
     if (!ui->platform.reader_dir) return;
     h5_url_text(&ui->ha.url, url, sizeof(url));
-    h5_shortcuts_write_reader(&ui->shortcuts, ui->platform.reader_dir, url, ui->ha.access, ui->ha.refresh,
-                              ui->ha.expires, "");
+    int rc = h5_shortcuts_write_reader(&ui->shortcuts, ui->platform.reader_dir, url, ui->ha.access, ui->ha.refresh,
+                                       ui->ha.expires, "");
+    ui->reader_warn = rc < 0;   /* couldn't write — usually /data unmounted because a game is open */
 }
 
 static void shortcuts_changed(H5Ui *ui)
@@ -2583,6 +2585,9 @@ static void shortcuts_screen(H5Ui *ui, H5Canvas *c)
     h5_text(c, &ui->fonts, H5_FACE_TITLE, (int)x, 214, C_TEXT, "Shortcuts", 0, 0);
     h5_text(c, &ui->fonts, H5_FACE_TEXT, (int)x, 262, C_DIM,
             "Fire a scene or a device from the controller while a game is running.", MAIN_W, 0);
+    if (ui->reader_warn)
+        h5_text(c, &ui->fonts, H5_FACE_SMALL, (int)x, 290, C_ORANGE,
+                "Couldn't save for the reader — set shortcuts up with no game open.", MAIN_W, 0);
 
     /* the master switch */
     float y = 300;

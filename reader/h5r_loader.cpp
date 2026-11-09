@@ -43,9 +43,10 @@ constexpr const char *kCfg = "/data/homebrew/PPSA11019/shortcuts.cfg";
 constexpr const char *kLogPath = "/data/homebrew/PPSA11019/reader.log";
 constexpr const char *kStopPath = "/data/homebrew/PPSA11019/stop";
 constexpr const char *kParkPath = "/data/homebrew/PPSA11019/park";
-constexpr const char *kThreadLog = "/system_tmp/h5combo.log";
-constexpr const char *kThreadMarker = "/system_tmp/h5combo.pid";
-constexpr const char *kThreadStop = "/system_tmp/h5combo.stop";
+constexpr const char *kThreadLog = "/system_tmp/home5_reader.log";
+constexpr const char *kThreadMarker = "/system_tmp/home5_reader.pid";
+constexpr const char *kThreadStop = "/system_tmp/home5_reader.stop";
+constexpr const char *kThreadCfg = "/system_tmp/home5_reader.cfg";   /* the config, where ShellUI can read it */
 constexpr int kMaxMinutes = 120;
 constexpr int kMaxShortcuts = 32;
 
@@ -136,6 +137,26 @@ int load_config() {
     return 1;
 }
 
+time_t g_cfg_mtime;
+
+/* SceShellUI can't read /data, so copy the config to /system_tmp, where the thread (inside ShellUI) can
+ * read it. Returns 1 when copied. */
+int copy_config_to_tmp() {
+    struct stat st;
+    if (stat(kCfg, &st) != 0) return 0;
+    FILE *in = std::fopen(kCfg, "rb");
+    if (!in) return 0;
+    FILE *out = std::fopen(kThreadCfg, "wb");
+    if (!out) { std::fclose(in); return 0; }
+    char buf[4096];
+    size_t n;
+    while ((n = std::fread(buf, 1, sizeof buf, in)) > 0) std::fwrite(buf, 1, n, out);
+    std::fclose(in);
+    std::fclose(out);
+    g_cfg_mtime = st.st_mtime;
+    return 1;
+}
+
 int ha_fire(const Shortcut &s) {
     H5Url url;
     if (h5_url_parse(g_url, &url)) { say("bad url: %s", g_url); return -1; }
@@ -220,8 +241,20 @@ void follow(pid_t pid) {
     long offset = 0;
     if (FILE *fp = std::fopen(kThreadLog, "r")) { std::fseek(fp, 0, SEEK_END); offset = std::ftell(fp); std::fclose(fp); }
     const time_t until = time(nullptr) + kMaxMinutes * 60;
+    int refresh_tick = 0;
     while (time(nullptr) < until) {
         if (access(kStopPath, F_OK) == 0 || access(kParkPath, F_OK) == 0) { say("stop or park file found"); return; }
+        /* When /data is reachable (no game in front) pick up shortcuts the player changed, and refresh the
+         * copy the thread reads. During a game /data is unmounted; the cached config keeps working. */
+        if (++refresh_tick >= 20) {
+            refresh_tick = 0;
+            struct stat st;
+            if (stat(kCfg, &st) == 0 && st.st_mtime != g_cfg_mtime) {
+                load_config();
+                copy_config_to_tmp();
+                say("shortcuts changed, reloaded %d", g_nsc);
+            }
+        }
         if (FILE *fp = std::fopen(kThreadLog, "r")) {
             std::fseek(fp, 0, SEEK_END);
             long end = std::ftell(fp);
@@ -232,7 +265,6 @@ void follow(pid_t pid) {
                 char *fire = std::strstr(line, "FIRE ");
                 if (!fire) continue;
                 int i = std::atoi(fire + 5);
-                load_config();   /* always the latest shortcuts and token */
                 if (i < 0 || i >= g_nsc) { say("fired %d but only %d shortcuts", i, g_nsc); continue; }
                 const Shortcut &s = g_sc[i];
                 say("shortcut %d (%s) fired", i, s.name);
@@ -267,6 +299,7 @@ int main() {
     }
     say("%d shortcuts, url=%s token=%d", g_nsc, g_url, g_access[0] != 0);
     h5r_net_start();
+    if (!copy_config_to_tmp()) say("warning: could not copy the config to /system_tmp for the thread");
 
     const pid_t pid = find_shellui();
     if (pid <= 0) return 1;

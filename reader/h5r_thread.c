@@ -28,10 +28,13 @@ typedef struct { uint8_t r, g, b, reserved; } PadColor;
 int scePadSetLightBar(int handle, const PadColor *color);
 int scePadResetLightBar(int handle);
 
-#define CFG_PATH    "/data/homebrew/PPSA11019/shortcuts.cfg"
-#define LOG_PATH    "/system_tmp/h5combo.log"
-#define MARKER_PATH "/system_tmp/h5combo.pid"
-#define STOP_PATH   "/system_tmp/h5combo.stop"
+/* All in /system_tmp: SceShellUI cannot read /data, so the loader (a normal payload, which can) copies
+ * the shortcuts here for the thread. Own names (home5_reader.*), so an older reader's thread can't be
+ * mistaken for this one. */
+#define CFG_PATH    "/system_tmp/home5_reader.cfg"
+#define LOG_PATH    "/system_tmp/home5_reader.log"
+#define MARKER_PATH "/system_tmp/home5_reader.pid"
+#define STOP_PATH   "/system_tmp/home5_reader.stop"
 
 #define BTN_INTERCEPTED 0x80000000u
 #define BTN_MASK        0x0010ffffu          /* the buttons this reads; the PS button (0x10000) is left out */
