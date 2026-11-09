@@ -126,7 +126,8 @@ int load_config() {
         Shortcut &s = g_sc[g_nsc++];
         std::memset(&s, 0, sizeof s);
         const char *cf = trim(f[1]);
-        s.confirm = !std::strcmp(cf, "notify") ? 1 : !std::strcmp(cf, "both") ? 2 : 0;
+        s.confirm = !std::strcmp(cf, "notify") ? 1 : !std::strcmp(cf, "rumble") ? 2
+                    : (!std::strcmp(cf, "all") || !std::strcmp(cf, "both")) ? 3 : 0;   /* bar=0 notify=1 rumble=2 all=3 */
         h5_copy(s.domain, sizeof s.domain, trim(f[2]));
         h5_copy(s.service, sizeof s.service, trim(f[3]));
         h5_copy(s.entity, sizeof s.entity, trim(f[4]));
@@ -269,7 +270,7 @@ void follow(pid_t pid) {
                 const Shortcut &s = g_sc[i];
                 say("shortcut %d (%s) fired", i, s.name);
                 ha_fire(s);
-                if (s.confirm == 1 || s.confirm == 2) {
+                if (s.confirm == 1 || s.confirm == 3) {   /* notify or all */
                     char body[96];
                     snprintf(body, sizeof body, "%s", s.name[0] ? s.name : "Shortcut");
                     notify("Home5", body);

@@ -65,6 +65,17 @@ static int split9(char *value, char *parts[9])
     return n;
 }
 
+static const char *confirm_name(uint8_t confirm)
+{
+    return confirm == H5_FB_NOTIFY ? "notify" : confirm == H5_FB_RUMBLE ? "rumble" : confirm == H5_FB_ALL ? "all" : "bar";
+}
+
+static uint8_t confirm_from(const char *name)
+{
+    return !strcmp(name, "notify") ? H5_FB_NOTIFY : !strcmp(name, "rumble") ? H5_FB_RUMBLE
+           : !strcmp(name, "all") || !strcmp(name, "both") ? H5_FB_ALL : H5_FB_LIGHTBAR;
+}
+
 static void parse_trigger(H5Shortcut *sc, const char *mode, char *trigger)
 {
     sc->mode = !strcmp(mode, "seq") ? H5_TRIG_SEQUENCE : H5_TRIG_COMBO;
@@ -113,7 +124,7 @@ int h5_shortcuts_load(H5Shortcuts *s, const char *path)
             h5_copy(sc->service, sizeof(sc->service), p[3]);
             h5_copy(sc->data, sizeof(sc->data), p[4]);
             h5_copy(sc->label, sizeof(sc->label), p[5]);
-            sc->confirm = !strcmp(p[7], "notify") ? H5_FB_NOTIFY : !strcmp(p[7], "both") ? H5_FB_BOTH : H5_FB_LIGHTBAR;
+            sc->confirm = confirm_from(p[7]);
             parse_trigger(sc, p[6], p[8]);
             s->count++;
         }
@@ -151,7 +162,7 @@ int h5_shortcuts_save(const H5Shortcuts *s, const char *path)
         trigger_text(sc, trigger, sizeof(trigger));
         h5_buf_printf(&text, "shortcut = %s | %s | %s | %s | %s | %s | %s | %s | %s\n", sc->name, sc->entity, sc->domain,
                       sc->service, sc->data, sc->label, sc->mode == H5_TRIG_SEQUENCE ? "seq" : "combo",
-                      sc->confirm == H5_FB_NOTIFY ? "notify" : sc->confirm == H5_FB_BOTH ? "both" : "bar", trigger);
+                      confirm_name(sc->confirm), trigger);
     }
     int ok = text.data ? h5_write_file(path, text.data, text.len) : -1;
     h5_buf_free(&text);
@@ -222,9 +233,8 @@ int h5_shortcuts_write_reader(const H5Shortcuts *s, const char *dir, const char 
         }
         if (!sc->domain[0] || !sc->service[0] || sc->len == 0) continue;   /* not finished */
         h5_buf_printf(&text, "sc = %s | %s | %s | %s | %s | %s | %s | %s\n",
-                      sc->mode == H5_TRIG_SEQUENCE ? "seq" : "combo",
-                      sc->confirm == H5_FB_NOTIFY ? "notify" : sc->confirm == H5_FB_BOTH ? "both" : "bar", sc->domain,
-                      sc->service, sc->entity, sc->data, keys, sc->name);
+                      sc->mode == H5_TRIG_SEQUENCE ? "seq" : "combo", confirm_name(sc->confirm), sc->domain, sc->service,
+                      sc->entity, sc->data, keys, sc->name);
         ready++;
     }
     int ok = -1;

@@ -18,7 +18,7 @@ typedef enum H5Kind {
     /* cards, which turn on and off or are set */
     H5_LIGHT, H5_SWITCH, H5_FAN, H5_COVER, H5_CLIMATE, H5_LOCK, H5_MEDIA,
     /* actions, which run */
-    H5_SCENE, H5_SCRIPT, H5_BUTTON,
+    H5_SCENE, H5_SCRIPT, H5_BUTTON, H5_AUTOMATION,
     /* readings */
     H5_SENSOR, H5_BINARY,
     H5_KINDS

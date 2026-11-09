@@ -42,7 +42,7 @@ enum H5Btn {
 enum { H5_SHORTCUTS_MAX = 32, H5_SEQ_MAX = 6, H5_SC_NAME = 48 };
 
 typedef enum H5Trigger { H5_TRIG_COMBO = 0, H5_TRIG_SEQUENCE = 1 } H5Trigger;
-typedef enum H5Feedback { H5_FB_LIGHTBAR = 0, H5_FB_NOTIFY = 1, H5_FB_BOTH = 2 } H5Feedback;
+typedef enum H5Feedback { H5_FB_LIGHTBAR = 0, H5_FB_NOTIFY = 1, H5_FB_RUMBLE = 2, H5_FB_ALL = 3 } H5Feedback;
 
 typedef struct H5Shortcut {
     char name[H5_SC_NAME];     /* "Movie lights" */

@@ -293,7 +293,8 @@ static void call(H5Ui *ui, H5Entity *e, const char *service, const char *data)
 /* ✕ on a device. */
 static void activate(H5Ui *ui, H5Entity *e)
 {
-    if (!e->available && e->kind != H5_SCENE && e->kind != H5_SCRIPT && e->kind != H5_BUTTON) {
+    if (!e->available && e->kind != H5_SCENE && e->kind != H5_SCRIPT && e->kind != H5_BUTTON &&
+        e->kind != H5_AUTOMATION) {
         toast(ui, "%s is unavailable.", entity_name(ui, e));
         return;
     }
@@ -331,6 +332,10 @@ static void activate(H5Ui *ui, H5Entity *e)
         break;
     case H5_BUTTON:
         call(ui, e, "press", NULL);
+        toast(ui, "%s", entity_name(ui, e));
+        break;
+    case H5_AUTOMATION:
+        call(ui, e, "trigger", NULL);
         toast(ui, "%s", entity_name(ui, e));
         break;
     default:
@@ -513,7 +518,7 @@ static uint32_t btn_from_keys(uint32_t keys)
 static int shortcut_runnable(H5Kind kind)
 {
     return kind == H5_LIGHT || kind == H5_SWITCH || kind == H5_FAN || kind == H5_COVER || kind == H5_SCENE ||
-           kind == H5_SCRIPT || kind == H5_BUTTON;
+           kind == H5_SCRIPT || kind == H5_BUTTON || kind == H5_AUTOMATION;
 }
 
 /* The action a shortcut runs an entity with, from its kind (as ✕ does on the home screen). -1: not runnable. */
@@ -525,6 +530,7 @@ static int shortcut_action(const H5Entity *e, const char *name, char *domain, si
     case H5_SCENE: kind_label = "Scene"; svc = "turn_on"; break;
     case H5_SCRIPT: kind_label = "Script"; svc = "turn_on"; break;
     case H5_BUTTON: kind_label = "Button"; svc = "press"; break;
+    case H5_AUTOMATION: kind_label = "Automation"; svc = "trigger"; break;
     case H5_LIGHT: kind_label = "Light"; svc = "toggle"; break;
     case H5_SWITCH: kind_label = "Switch"; svc = "toggle"; break;
     case H5_FAN: kind_label = "Fan"; svc = "toggle"; break;
@@ -1548,7 +1554,7 @@ static void update_shortcut(H5Ui *ui, uint32_t k)
         sc->len = 0;
         shortcuts_changed(ui);
     } else if (dir && ui->sc_row == R_CONFIRM) {
-        sc->confirm = (uint8_t)(((int)sc->confirm + dir + 3) % 3);
+        sc->confirm = (uint8_t)(((int)sc->confirm + dir + 4) % 4);
         shortcuts_changed(ui);
     }
     if (k & accept_key(ui)) {
@@ -1562,7 +1568,7 @@ static void update_shortcut(H5Ui *ui, uint32_t k)
             shortcuts_changed(ui);
             break;
         case R_RECORD: start_capture(ui); break;
-        case R_CONFIRM: sc->confirm = (uint8_t)(((int)sc->confirm + 1) % 3); shortcuts_changed(ui); break;
+        case R_CONFIRM: sc->confirm = (uint8_t)(((int)sc->confirm + 1) % 4); shortcuts_changed(ui); break;
         case R_SAVE: shortcuts_changed(ui); go(ui, S_SHORTCUTS); break;
         }
     }
@@ -1873,6 +1879,7 @@ static void icon(H5Canvas *c, const H5Entity *e, float x, float y, float size, u
         break;
     case H5_SCENE:
     case H5_SCRIPT:
+    case H5_AUTOMATION:
         h5_ring(c, P(12, 12), 9 * s, w, col);
         h5_triangle(c, P(10, 8), P(10, 16), P(16.5f, 12), 0.6f * s, col);
         break;
@@ -1917,7 +1924,9 @@ static void card(H5Ui *ui, H5Canvas *c, const H5Entity *e, float x, float y, int
     h5_text(c, &ui->fonts, H5_FACE_CARD, (int)x + 32, (int)y + 136, C_TEXT, entity_name(ui, e), CARD_W - 64, 0);
     h5_entity_status(e, ui->ha.temp_unit, status, sizeof(status));
     if (!status[0] && e->kind >= H5_SCENE)
-        h5_copy(status, sizeof(status), e->kind == H5_SCENE ? "Scene" : e->kind == H5_SCRIPT ? "Script" : "Button");
+        h5_copy(status, sizeof(status),
+                e->kind == H5_SCENE ? "Scene" : e->kind == H5_SCRIPT ? "Script"
+                : e->kind == H5_AUTOMATION ? "Automation" : "Button");
     h5_text(c, &ui->fonts, H5_FACE_BODY, (int)x + 32, (int)y + 172, text_col, status, CARD_W - 64, 0);
     float fraction = -1;
     if (e->kind == H5_LIGHT && e->brightness >= 0) fraction = e->on ? (float)e->brightness / 255 : 0;
@@ -2666,7 +2675,7 @@ static void shortcut_screen(H5Ui *ui, H5Canvas *c)
 {
     H5Shortcut *sc = editing(ui);
     static const char *const types[] = { "Hold together", "Sequence" };
-    static const char *const fbs[] = { "Light bar", "Notification", "Both" };
+    static const char *const fbs[] = { "Light bar", "Notification", "Rumble", "All" };
     float Wc = 1160, x = (W - Wc) / 2.0f;
     header(ui, c, "Shortcuts");
     if (!sc) return;
@@ -2684,7 +2693,7 @@ static void shortcut_screen(H5Ui *ui, H5Canvas *c)
     h5_text(c, &ui->fonts, H5_FACE_SMALL, (int)x + (int)Wc - 24, 604, C_DIM, "Square to record", 0, 2);
 
     h5_text(c, &ui->fonts, H5_FACE_CAPS, (int)x, 684, C_FAINT, "CONFIRM WHEN IT FIRES", 0, 0);
-    seg_ctl(ui, c, x, 708, fbs, 3, sc->confirm, ui->sc_row == R_CONFIRM);
+    seg_ctl(ui, c, x, 708, fbs, 4, sc->confirm, ui->sc_row == R_CONFIRM);
 
     foc = ui->sc_row == R_SAVE;
     if (foc) h5_round_rect(c, x - 4, 816, 300, 72, 36, C_FOCUS);

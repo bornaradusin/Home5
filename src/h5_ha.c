@@ -534,6 +534,7 @@ static const struct { const char *domain; H5Kind kind; } domains[] = {
     { "light", H5_LIGHT },      { "switch", H5_SWITCH },  { "input_boolean", H5_SWITCH }, { "fan", H5_FAN },
     { "cover", H5_COVER },      { "climate", H5_CLIMATE }, { "lock", H5_LOCK },          { "media_player", H5_MEDIA },
     { "scene", H5_SCENE },      { "script", H5_SCRIPT },  { "button", H5_BUTTON },      { "input_button", H5_BUTTON },
+    { "automation", H5_AUTOMATION },
     { "sensor", H5_SENSOR },    { "binary_sensor", H5_BINARY },
 };
 

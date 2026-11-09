@@ -27,6 +27,8 @@ int sceUserServiceGetForegroundUser(int *user_id);
 typedef struct { uint8_t r, g, b, reserved; } PadColor;
 int scePadSetLightBar(int handle, const PadColor *color);
 int scePadResetLightBar(int handle);
+typedef struct { uint8_t large, small; } PadVibe;
+int scePadSetVibration(int handle, const PadVibe *param);
 
 /* All in /system_tmp: SceShellUI cannot read /data, so the loader (a normal payload, which can) copies
  * the shortcuts here for the thread. Own names (home5_reader.*), so an older reader's thread can't be
@@ -45,7 +47,7 @@ int scePadResetLightBar(int handle);
 #define MAX_LOG_LINES   20000
 
 enum { TRIG_COMBO = 0, TRIG_SEQ = 1 };
-enum { FB_BAR = 0, FB_NOTIFY = 1, FB_BOTH = 2 };
+enum { FB_BAR = 0, FB_NOTIFY = 1, FB_RUMBLE = 2, FB_ALL = 3 };
 
 typedef struct {
     int mode, confirm, len;
@@ -113,7 +115,8 @@ static int load_config(void)
         memset(&t, 0, sizeof t);
         t.mode = !strcmp(trim(f[0]), "seq") ? TRIG_SEQ : TRIG_COMBO;
         const char *cf = trim(f[1]);
-        t.confirm = !strcmp(cf, "notify") ? FB_NOTIFY : !strcmp(cf, "both") ? FB_BOTH : FB_BAR;
+        t.confirm = !strcmp(cf, "notify") ? FB_NOTIFY : !strcmp(cf, "rumble") ? FB_RUMBLE
+                    : (!strcmp(cf, "all") || !strcmp(cf, "both")) ? FB_ALL : FB_BAR;
         char *keys = trim(f[6]);
         if (t.mode == TRIG_SEQ) {
             for (char *tok = strtok(keys, ","); tok && t.len < 6; tok = strtok(NULL, ","))
@@ -190,7 +193,9 @@ __attribute__((noreturn, visibility("default"))) void *elf_main(void *payload_ar
             }
         }
         if (flash_until && t >= flash_until && handle >= 0) {
+            PadVibe off = { 0, 0 };
             scePadResetLightBar(handle);
+            scePadSetVibration(handle, &off);
             flash_until = 0;
         }
 
@@ -279,9 +284,17 @@ __attribute__((noreturn, visibility("default"))) void *elf_main(void *payload_ar
                 char line[32];
                 snprintf(line, sizeof line, "FIRE %d", i);
                 log_line(line);
-                if ((g->confirm == FB_BAR || g->confirm == FB_BOTH) && handle >= 0) {
-                    PadColor amber = { 0xff, 0xc3, 0x5a, 0 };
-                    scePadSetLightBar(handle, &amber);
+                int bar = g->confirm == FB_BAR || g->confirm == FB_ALL;
+                int rumble = g->confirm == FB_RUMBLE || g->confirm == FB_ALL;
+                if ((bar || rumble) && handle >= 0) {
+                    if (bar) {
+                        PadColor amber = { 0xff, 0xc3, 0x5a, 0 };
+                        scePadSetLightBar(handle, &amber);
+                    }
+                    if (rumble) {
+                        PadVibe v = { 180, 180 };
+                        scePadSetVibration(handle, &v);
+                    }
                     flash_until = t + FLASH_MS;
                 }
             }
