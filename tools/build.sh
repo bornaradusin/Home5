@@ -24,7 +24,7 @@ version=$(sed -n 's/^#define H5_VERSION "\(.*\)"$/\1/p' "$here/src/h5.h")
 # X.Y.Z, optionally with a test-version suffix (1.1.0-shortcuts-test): the suffix makes the build a
 # pre-release the updater and the catalog leave alone (the workflow); the app's numeric part is what
 # param.json carries.
-[[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]] || { echo "src/h5.h has no valid H5_VERSION" >&2; exit 2; }
+[[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]] || { echo "src/h5.h has no valid H5_VERSION" >&2; exit 2; }
 for command in git curl wget unzip zip tar xz make clang-18 llvm-ar-18 llvm-readelf-18 python3; do
     command -v "$command" >/dev/null || { echo "missing: $command" >&2; exit 2; }
 done
