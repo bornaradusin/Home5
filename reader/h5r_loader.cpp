@@ -58,6 +58,7 @@ struct Shortcut {
 Shortcut g_sc[kMaxShortcuts];
 int g_nsc;
 char g_url[400], g_access[2048];
+time_t g_cfg_mtime;
 
 void say(const char *fmt, ...) {
     char line[512];
@@ -92,10 +93,11 @@ char *trim(char *s) {
     return s;
 }
 
-/* Reads shortcuts.cfg: url/access and one Shortcut per sc line, in the same order and under the same test
- * (a non-empty trigger) the thread uses, so the thread's "FIRE <i>" indexes this array. */
+/* Reads the config from /system_tmp — the same file the thread reads — so the loader's shortcut list and
+ * the thread's are always the one list, and the thread's "FIRE <i>" indexes this array correctly even
+ * when an edit reached /system_tmp without /data (a game had /data unmounted). */
 int load_config() {
-    FILE *fp = std::fopen(kCfg, "r");
+    FILE *fp = std::fopen(kThreadCfg, "r");
     char line[512];
     if (!fp) return 0;
     g_nsc = 0;
@@ -135,16 +137,19 @@ int load_config() {
         if (nf > 7) h5_copy(s.name, sizeof s.name, trim(f[7]));
     }
     std::fclose(fp);
+    struct stat st;
+    if (stat(kThreadCfg, &st) == 0) g_cfg_mtime = st.st_mtime;
     return 1;
 }
 
-time_t g_cfg_mtime;
-
-/* SceShellUI can't read /data, so copy the config to /system_tmp, where the thread (inside ShellUI) can
- * read it. Returns 1 when copied. */
+/* Seeds /system_tmp from /data when /system_tmp has no config yet or /data is the newer copy. The app
+ * writes /system_tmp straight, so this only fills it in after a reboot or before the app has saved; it
+ * never clobbers a fresher /system_tmp the app wrote mid-game. Returns 1 when it copied. */
 int copy_config_to_tmp() {
-    struct stat st;
-    if (stat(kCfg, &st) != 0) return 0;
+    struct stat ds, ts;
+    if (stat(kCfg, &ds) != 0) return 0;                            /* no /data config to seed from */
+    if (stat(kThreadCfg, &ts) == 0 && ts.st_mtime >= ds.st_mtime)  /* /system_tmp already current */
+        return 0;
     FILE *in = std::fopen(kCfg, "rb");
     if (!in) return 0;
     FILE *out = std::fopen(kThreadCfg, "wb");
@@ -154,7 +159,6 @@ int copy_config_to_tmp() {
     while ((n = std::fread(buf, 1, sizeof buf, in)) > 0) std::fwrite(buf, 1, n, out);
     std::fclose(in);
     std::fclose(out);
-    g_cfg_mtime = st.st_mtime;
     return 1;
 }
 
@@ -245,14 +249,14 @@ void follow(pid_t pid) {
     int refresh_tick = 0;
     while (time(nullptr) < until) {
         if (access(kStopPath, F_OK) == 0 || access(kParkPath, F_OK) == 0) { say("stop or park file found"); return; }
-        /* When /data is reachable (no game in front) pick up shortcuts the player changed, and refresh the
-         * copy the thread reads. During a game /data is unmounted; the cached config keeps working. */
+        /* Pick up edits from the same /system_tmp copy the thread reads (the app writes it straight there,
+         * even mid-game). Reseed it from /data only when /data is the newer source. */
         if (++refresh_tick >= 20) {
             refresh_tick = 0;
+            copy_config_to_tmp();
             struct stat st;
-            if (stat(kCfg, &st) == 0 && st.st_mtime != g_cfg_mtime) {
+            if (stat(kThreadCfg, &st) == 0 && st.st_mtime != g_cfg_mtime) {
                 load_config();
-                copy_config_to_tmp();
                 say("shortcuts changed, reloaded %d", g_nsc);
             }
         }
@@ -293,6 +297,7 @@ int main() {
     unlink(kParkPath);
     say("=== home5 shortcuts reader pid=%d ===", getpid());
 
+    copy_config_to_tmp();   /* seed /system_tmp from /data if it has no config yet or /data is newer */
     if (!load_config() || g_nsc == 0) {
         say("no shortcuts configured (open Home5 and set some up)");
         notify("Home5 shortcuts", "No shortcuts set up yet");
@@ -300,7 +305,6 @@ int main() {
     }
     say("%d shortcuts, url=%s token=%d", g_nsc, g_url, g_access[0] != 0);
     h5r_net_start();
-    if (!copy_config_to_tmp()) say("warning: could not copy the config to /system_tmp for the thread");
 
     const pid_t pid = find_shellui();
     if (pid <= 0) return 1;
