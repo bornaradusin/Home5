@@ -9,6 +9,8 @@ It has two parts:
 
 ## Setting up a shortcut
 
+![The Shortcuts screen](images/shortcuts-list.png)
+
 Open **Options › Shortcuts**. For each shortcut you set:
 
 - **Name** — what it's called.
@@ -19,7 +21,13 @@ Open **Options › Shortcuts**. For each shortcut you set:
   - Any button works except **PS** (it opens the system menu). L1/R1, L2/R2, L3/R3, the face buttons, the d-pad and the touchpad are all fair game.
 - **Confirmation** — what happens when it fires: **Light bar**, **Notification**, **Rumble**, or **All**.
 
-Pick combos a game won't use by accident — holding L3 + R3 and a face button or a direction for a moment is a good pattern.
+![Editing a shortcut](images/shortcut-editor.png)
+
+When you set the combo, Home5 **records the buttons** as you press them:
+
+![Recording a combo](images/recording-a-combo.png)
+
+Pick combos a game won't use by accident — holding L3 + R3 and a face button or a direction for a moment is a good pattern. Your saved shortcuts are listed on the Shortcuts screen with their combo shown alongside.
 
 ### Rumble feel
 

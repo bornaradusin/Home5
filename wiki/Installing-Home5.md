@@ -12,6 +12,8 @@ Install the app the way you install other homebrew on your console. Home5 lands 
 
 On first launch, Home5 asks you to sign in to your Home Assistant server. Enter your server address and authorize the app when Home Assistant prompts you. Home5 keeps the sign-in so you don't have to do it again; you can sign out later from the options.
 
+![Signing in to Home Assistant](images/sign-in.png)
+
 Nothing is added automatically — Home5 starts empty, and you build the home screen yourself. See **[Rooms, devices and scenes](Rooms-devices-and-scenes)**.
 
 ## Updating

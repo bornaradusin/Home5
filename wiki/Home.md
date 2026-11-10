@@ -2,6 +2,8 @@
 
 Home Assistant on the PS5. Home5 is a homebrew app for a jailbroken console that talks to your own Home Assistant server, so you can see and control your home from the TV — and, with background shortcuts, from inside a game.
 
+![The Home5 home screen](images/home.png)
+
 Home5 installs under **Media**, not Games.
 
 ## Pages
