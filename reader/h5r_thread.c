@@ -58,6 +58,8 @@ typedef struct {
 static Trig g_trig[MAX_TRIG];
 static int g_ntrig;
 static int g_hold_ms = 150;
+static int g_rumble_str = 180;   /* both motors, 0–255 */
+static int g_rumble_ms = 350;    /* how long the rumble pulse lasts */
 static int g_lines;
 
 static uint64_t now_ms(void)
@@ -102,6 +104,16 @@ static int load_config(void)
         if (!strcmp(key, "hold_ms")) {
             int h = atoi(trim(val));
             if (h >= 50 && h <= 2000) g_hold_ms = h;
+            continue;
+        }
+        if (!strcmp(key, "rumble_strength")) {
+            int v = atoi(trim(val));
+            if (v >= 0 && v <= 255) g_rumble_str = v;
+            continue;
+        }
+        if (!strcmp(key, "rumble_ms")) {
+            int v = atoi(trim(val));
+            if (v >= 50 && v <= 3000) g_rumble_ms = v;
             continue;
         }
         if (strcmp(key, "sc") || g_ntrig >= MAX_TRIG) continue;
@@ -169,7 +181,7 @@ __attribute__((noreturn, visibility("default"))) void *elf_main(void *payload_ar
     int handle = -1, pad_user = -1, read_failures = 0, user_check = 0, init_wait = 0, init_logs = 0;
     uint32_t last_buttons = 0xffffffffu, prev_real = 0;
     int last_connected = -1;
-    uint64_t combo_since[MAX_TRIG] = { 0 }, seq_last[MAX_TRIG] = { 0 }, cfg_check = 0, flash_until = 0;
+    uint64_t combo_since[MAX_TRIG] = { 0 }, seq_last[MAX_TRIG] = { 0 }, cfg_check = 0, flash_until = 0, rumble_until = 0;
     int combo_fired[MAX_TRIG] = { 0 }, seq_prog[MAX_TRIG] = { 0 };
     time_t cfg_mtime = 0;
 
@@ -193,10 +205,13 @@ __attribute__((noreturn, visibility("default"))) void *elf_main(void *payload_ar
             }
         }
         if (flash_until && t >= flash_until && handle >= 0) {
-            PadVibe off = { 0, 0 };
             scePadResetLightBar(handle);
-            scePadSetVibration(handle, &off);
             flash_until = 0;
+        }
+        if (rumble_until && t >= rumble_until && handle >= 0) {
+            PadVibe off = { 0, 0 };
+            scePadSetVibration(handle, &off);
+            rumble_until = 0;
         }
 
         if (handle < 0) {
@@ -286,16 +301,18 @@ __attribute__((noreturn, visibility("default"))) void *elf_main(void *payload_ar
                 log_line(line);
                 int bar = g->confirm == FB_BAR || g->confirm == FB_ALL;
                 int rumble = g->confirm == FB_RUMBLE || g->confirm == FB_ALL;
-                if ((bar || rumble) && handle >= 0) {
-                    if (bar) {
-                        PadColor amber = { 0xff, 0xc3, 0x5a, 0 };
-                        scePadSetLightBar(handle, &amber);
-                    }
-                    if (rumble) {
-                        PadVibe v = { 180, 180 };
-                        scePadSetVibration(handle, &v);
-                    }
+                if (bar && handle >= 0) {
+                    PadColor amber = { 0xff, 0xc3, 0x5a, 0 };
+                    int rc = scePadSetLightBar(handle, &amber);
+                    char lb[48];
+                    snprintf(lb, sizeof lb, "lightbar rc=0x%x", rc);
+                    log_line(lb);
                     flash_until = t + FLASH_MS;
+                }
+                if (rumble && handle >= 0) {
+                    PadVibe v = { (uint8_t)g_rumble_str, (uint8_t)g_rumble_str };
+                    scePadSetVibration(handle, &v);
+                    rumble_until = t + (uint64_t)g_rumble_ms;
                 }
             }
         }

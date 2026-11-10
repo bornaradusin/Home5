@@ -62,6 +62,8 @@ typedef struct H5Shortcuts {
     H5Shortcut items[H5_SHORTCUTS_MAX];
     int count;
     uint8_t enabled;           /* the master switch */
+    uint16_t rumble_str;       /* rumble strength 0–255 (both motors) */
+    uint16_t rumble_ms;        /* how long the rumble lasts */
 } H5Shortcuts;
 
 /* ---- the model ------------------------------------------------------------------------------ */

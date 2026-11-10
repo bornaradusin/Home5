@@ -539,7 +539,7 @@ static int shortcut_action(const H5Entity *e, const char *name, char *domain, si
     }
     domain_of(e->id, domain, ds);
     h5_copy(service, ss, svc);
-    snprintf(label, ls, "%s · %s", kind_label, name);
+    snprintf(label, ls, "%s · %.44s", kind_label, name);
     return 0;
 }
 
@@ -798,6 +798,7 @@ static const Filter filters[] = {
     { "Locks", KIND(H5_LOCK) },
     { "Media", KIND(H5_MEDIA) },
     { "Scenes", KIND(H5_SCENE) | KIND(H5_SCRIPT) | KIND(H5_BUTTON) },
+    { "Automations", KIND(H5_AUTOMATION) },
     { "Sensors", KIND(H5_SENSOR) | KIND(H5_BINARY) },
 };
 enum { FILTERS = sizeof(filters) / sizeof(filters[0]) };
@@ -1504,7 +1505,8 @@ static void update_confirm(H5Ui *ui, uint32_t k)
 
 static void update_shortcuts(H5Ui *ui, uint32_t k)
 {
-    int count = ui->shortcuts.count, rows = count + 2;   /* 0 master, 1..count shortcuts, last Add */
+    /* 0 master, 1 rumble strength, 2 rumble length, 3..count+2 shortcuts, last Add */
+    int count = ui->shortcuts.count, first_sc = 3, add_row = count + 3, rows = count + 4;
     if (k & back_key(ui)) {
         shortcuts_changed(ui);
         go(ui, S_HOME);
@@ -1512,22 +1514,31 @@ static void update_shortcuts(H5Ui *ui, uint32_t k)
     }
     if (list_move(&ui->sc_at, rows, k)) ui->dirty = 1;
     scroll_to(ui->sc_at, &ui->sc_top, LIST_ROWS);
+    int dir = (k & H5_KEY_RIGHT) ? 1 : (k & H5_KEY_LEFT) ? -1 : 0;
+    if (dir && ui->sc_at == 1) {
+        ui->shortcuts.rumble_str = (uint16_t)clampi((int)ui->shortcuts.rumble_str + dir * 26, 0, 255);
+        shortcuts_changed(ui);
+    } else if (dir && ui->sc_at == 2) {
+        ui->shortcuts.rumble_ms = (uint16_t)clampi((int)ui->shortcuts.rumble_ms + dir * 50, 100, 800);
+        shortcuts_changed(ui);
+    }
     if (k & accept_key(ui)) {
         if (ui->sc_at == 0) {
             ui->shortcuts.enabled = !ui->shortcuts.enabled;
             shortcuts_changed(ui);
-        } else if (ui->sc_at <= count) {
-            open_shortcut(ui, ui->sc_at - 1);
-        } else {
+        } else if (ui->sc_at >= first_sc && ui->sc_at <= count + 2) {
+            open_shortcut(ui, ui->sc_at - first_sc);
+        } else if (ui->sc_at == add_row) {
             shortcut_add(ui);
         }
     }
-    if ((k & H5_KEY_SQUARE) && ui->sc_at >= 1 && ui->sc_at <= count) {
+    if ((k & H5_KEY_SQUARE) && ui->sc_at >= first_sc && ui->sc_at <= count + 2) {
+        int idx = ui->sc_at - first_sc;
         char name[H5_SC_NAME];
-        h5_copy(name, sizeof(name), ui->shortcuts.items[ui->sc_at - 1].name);
-        h5_shortcuts_delete(&ui->shortcuts, ui->sc_at - 1);
+        h5_copy(name, sizeof(name), ui->shortcuts.items[idx].name);
+        h5_shortcuts_delete(&ui->shortcuts, idx);
         shortcuts_changed(ui);
-        ui->sc_at = clampi(ui->sc_at, 0, ui->shortcuts.count + 1);
+        ui->sc_at = clampi(ui->sc_at, 0, ui->shortcuts.count + 3);
         toast(ui, "%s is deleted.", name);
     }
 }
@@ -2608,19 +2619,36 @@ static void shortcuts_screen(H5Ui *ui, H5Canvas *c)
     h5_round_rect(c, x + MAIN_W - 104, y + 22, 84, 44, 22, s->enabled ? C_ACCENT : C_TRACK);
     h5_circle(c, s->enabled ? x + MAIN_W - 48 : x + MAIN_W - 82, y + 44, 17, 0xffffffffu);
 
-    /* the shortcuts, then Add, scrolled so the focused one fits */
+    /* rumble settings, the shortcuts, then Add, scrolled so the focused one fits */
     enum { VIS = 6, ROWH = 92, GAP = 14 };
     float ry = y + 112;
+    int add_row = count + 3;
     int first = ui->sc_top < 1 ? 1 : ui->sc_top;
     if (ui->sc_at >= 1) {
         if (ui->sc_at < first) first = ui->sc_at;
         if (ui->sc_at >= first + VIS) first = ui->sc_at - VIS + 1;
     }
     ui->sc_top = first;
-    for (int r = first; r <= count + 1 && r < first + VIS; r++) {
+    for (int r = first; r <= add_row && r < first + VIS; r++) {
         float ty = ry + (float)(r - first) * (ROWH + GAP);
         int foc = ui->sc_at == r;
-        if (r > count) {
+        if (r == 1 || r == 2) {
+            /* rumble strength / length, adjusted with left and right */
+            char val[48];
+            if (r == 1) snprintf(val, sizeof(val), "<   %d%%   >", (s->rumble_str * 100 + 127) / 255);
+            else snprintf(val, sizeof(val), "<   %d ms   >", s->rumble_ms);
+            if (foc) h5_round_rect(c, x - 4, ty - 4, MAIN_W + 8, ROWH + 8, 20, C_FOCUS);
+            h5_round_rect(c, x, ty, MAIN_W, ROWH, 16, foc ? C_CARD_ON : C_CARD);
+            h5_text(c, &ui->fonts, H5_FACE_CARD, (int)x + 28, (int)ty + 42, C_TEXT,
+                    r == 1 ? "Rumble strength" : "Rumble length", 0, 0);
+            h5_text(c, &ui->fonts, H5_FACE_BODY, (int)x + 28, (int)ty + 74, C_FAINT,
+                    "For the Rumble and All confirmations", MAIN_W / 2, 0);
+            int vw = h5_text_width(&ui->fonts, H5_FACE_CARD, val);
+            h5_text(c, &ui->fonts, H5_FACE_CARD, (int)(x + MAIN_W - 28 - vw), (int)ty + ROWH / 2 + 12,
+                    foc ? C_AMBER : C_FAINT, val, 0, 0);
+            continue;
+        }
+        if (r >= add_row) {
             /* Add */
             h5_round_frame(c, x, ty, MAIN_W, 72, 16, foc ? 2 : 2, foc ? C_FOCUS : C_TRACK);
             int tw = h5_text_width(&ui->fonts, H5_FACE_LABEL, "Add shortcut");
@@ -2630,7 +2658,7 @@ static void shortcuts_screen(H5Ui *ui, H5Canvas *c)
             h5_text(c, &ui->fonts, H5_FACE_LABEL, (int)ax + 36, (int)ty + 46, foc ? C_TEXT : C_DIM, "Add shortcut", 0, 0);
             continue;
         }
-        const H5Shortcut *sc = &s->items[r - 1];
+        const H5Shortcut *sc = &s->items[r - 3];
         if (foc) h5_round_rect(c, x - 4, ty - 4, MAIN_W + 8, ROWH + 8, 20, C_FOCUS);
         h5_round_rect(c, x, ty, MAIN_W, ROWH, 16, foc ? C_CARD_ON : C_CARD);
         h5_text(c, &ui->fonts, H5_FACE_CARD, (int)x + 28, (int)ty + 42, C_TEXT, sc->name[0] ? sc->name : "(unnamed)",
@@ -2642,8 +2670,12 @@ static void shortcuts_screen(H5Ui *ui, H5Canvas *c)
     }
     Hint list[3];
     int n = 0;
-    list[n++] = (Hint){ accept_glyph(ui), ui->sc_at == 0 ? "Turn on / off" : ui->sc_at <= count ? "Edit" : "Add" };
-    if (ui->sc_at >= 1 && ui->sc_at <= count) list[n++] = (Hint){ G_SQUARE, "Delete" };
+    if (ui->sc_at == 1 || ui->sc_at == 2)
+        list[n++] = (Hint){ G_LR, "Adjust" };
+    else
+        list[n++] = (Hint){ accept_glyph(ui), ui->sc_at == 0 ? "Turn on / off"
+                            : (ui->sc_at >= 3 && ui->sc_at <= count + 2) ? "Edit" : "Add" };
+    if (ui->sc_at >= 3 && ui->sc_at <= count + 2) list[n++] = (Hint){ G_SQUARE, "Delete" };
     list[n++] = (Hint){ back_glyph(ui), "Done" };
     hints(ui, c, MARGIN, 1012, list, n);
 }
