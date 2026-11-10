@@ -206,6 +206,10 @@ void h5_shortcuts_delete(H5Shortcuts *s, int index)
 
 /* ---- the reader's config ---------------------------------------------------------------------- */
 
+/* The live copy the reader thread reads, straight on the system tmpfs so it survives a game
+ * unmounting /data from the app's sandbox (SceShellUI can't read /data anyway). */
+#define READER_TMP "/system_tmp/home5_reader.cfg"
+
 static int reader_path(char *out, size_t size, const char *dir)
 {
     return h5_join(out, size, dir, "shortcuts.cfg");
@@ -251,8 +255,15 @@ int h5_shortcuts_write_reader(const H5Shortcuts *s, const char *dir, const char 
         ready++;
     }
     int ok = -1;
-    if (ready && text.data) ok = h5_write_file(path, text.data, text.len);
-    else h5_shortcuts_clear_reader(dir);   /* nothing finished: no config */
+    if (ready && text.data) {
+        int ok_data = h5_write_file(path, text.data, text.len);
+        /* Also write it live to /system_tmp, where the reader thread reads it, so an edit made while
+         * a game has /data unmounted still reaches the reader without restarting the app. */
+        int ok_tmp = h5_write_file(READER_TMP, text.data, text.len);
+        ok = (ok_data == 0 || ok_tmp == 0) ? 0 : -1;
+    } else {
+        h5_shortcuts_clear_reader(dir);   /* nothing finished: no config */
+    }
     memset(text.data, 0, text.cap);   /* the file held a token */
     h5_buf_free(&text);
     return ready ? ok : 0;
@@ -262,4 +273,5 @@ void h5_shortcuts_clear_reader(const char *dir)
 {
     char path[H5_PATH];
     if (!reader_path(path, sizeof(path), dir)) remove(path);
+    remove(READER_TMP);
 }
