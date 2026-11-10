@@ -928,6 +928,7 @@ static void test_screens(void)
     shot("15-shortcuts-empty");
     frame(ui, H5_KEY_DOWN);    /* rumble strength */
     frame(ui, H5_KEY_DOWN);    /* rumble length */
+    frame(ui, H5_KEY_DOWN);    /* rumble pulses */
     frame(ui, H5_KEY_DOWN);    /* the Add row */
     frame(ui, H5_KEY_CROSS);
     CHECK(!strcmp(h5_ui_screen(ui), "shortcut"), "the editor opened: %s", h5_ui_screen(ui));

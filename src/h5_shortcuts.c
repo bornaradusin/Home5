@@ -51,6 +51,7 @@ void h5_shortcuts_reset(H5Shortcuts *s)
     s->enabled = 1;
     s->rumble_str = 180;
     s->rumble_ms = 350;
+    s->rumble_pulses = 1;
 }
 
 /* name|entity|domain|service|data|label|mode|confirm|trigger into up to 9 trimmed parts. */
@@ -121,6 +122,9 @@ int h5_shortcuts_load(H5Shortcuts *s, const char *path)
         } else if (!strcmp(key, "rumble_ms")) {
             int v = atoi(value);
             if (v >= 50 && v <= 3000) s->rumble_ms = (uint16_t)v;
+        } else if (!strcmp(key, "rumble_pulses")) {
+            int v = atoi(value);
+            if (v >= 1 && v <= 3) s->rumble_pulses = (uint16_t)v;
         } else if (!strcmp(key, "shortcut") && s->count < H5_SHORTCUTS_MAX) {
             char *p[9];
             split9(value, p);
@@ -167,6 +171,7 @@ int h5_shortcuts_save(const H5Shortcuts *s, const char *path)
     h5_buf_printf(&text, "enabled = %s\n", s->enabled ? "on" : "off");
     h5_buf_printf(&text, "rumble_str = %d\n", s->rumble_str);
     h5_buf_printf(&text, "rumble_ms = %d\n", s->rumble_ms);
+    h5_buf_printf(&text, "rumble_pulses = %d\n", s->rumble_pulses);
     for (int i = 0; i < s->count; i++) {
         const H5Shortcut *sc = &s->items[i];
         char trigger[128];
@@ -237,6 +242,7 @@ int h5_shortcuts_write_reader(const H5Shortcuts *s, const char *dir, const char 
     h5_buf_puts(&text, "hold_ms = 150\n");
     h5_buf_printf(&text, "rumble_strength = %d\n", s->rumble_str);
     h5_buf_printf(&text, "rumble_ms = %d\n", s->rumble_ms);
+    h5_buf_printf(&text, "rumble_pulses = %d\n", s->rumble_pulses);
     h5_buf_puts(&text, "# sc = mode | confirm | domain | service | entity | data | keys | name\n");
     for (int i = 0; i < s->count; i++) {
         const H5Shortcut *sc = &s->items[i];

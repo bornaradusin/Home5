@@ -21,6 +21,7 @@
 #include <sys/sysctl.h>
 #include <sys/types.h>
 #include <sys/user.h>
+#include <signal.h>
 #include <unistd.h>
 
 #include "stable_shellui_injector.hpp"
@@ -47,7 +48,7 @@ constexpr const char *kThreadLog = "/system_tmp/home5_reader.log";
 constexpr const char *kThreadMarker = "/system_tmp/home5_reader.pid";
 constexpr const char *kThreadStop = "/system_tmp/home5_reader.stop";
 constexpr const char *kThreadCfg = "/system_tmp/home5_reader.cfg";   /* the config, where ShellUI can read it */
-constexpr int kMaxMinutes = 120;
+constexpr const char *kLoaderLock = "/system_tmp/home5_reader.loader";  /* this process's pid, so a second reader refuses */
 constexpr int kMaxShortcuts = 32;
 
 struct Shortcut {
@@ -245,10 +246,10 @@ bool inject(pid_t pid) {
 void follow(pid_t pid) {
     long offset = 0;
     if (FILE *fp = std::fopen(kThreadLog, "r")) { std::fseek(fp, 0, SEEK_END); offset = std::ftell(fp); std::fclose(fp); }
-    const time_t until = time(nullptr) + kMaxMinutes * 60;
     int refresh_tick = 0;
-    while (time(nullptr) < until) {
+    while (true) {
         if (access(kStopPath, F_OK) == 0 || access(kParkPath, F_OK) == 0) { say("stop or park file found"); return; }
+        if (kill(pid, 0) != 0) { say("SceShellUI pid %d is gone, stopping", pid); return; }
         /* Pick up edits from the same /system_tmp copy the thread reads (the app writes it straight there,
          * even mid-game). Reseed it from /data only when /data is the newer source. */
         if (++refresh_tick >= 20) {
@@ -286,7 +287,20 @@ void follow(pid_t pid) {
         if (read_marker() != pid) { say("thread marker gone (ShellUI restarted?), stopping"); return; }
         usleep(100000);
     }
-    say("time limit of %d min reached", kMaxMinutes);
+}
+
+/* Refuse to start a second reader: a stale lock (its pid dead) is ignored, so this self-heals. */
+bool another_loader_running() {
+    FILE *fp = std::fopen(kLoaderLock, "r");
+    if (!fp) return false;
+    int pid = 0;
+    if (std::fscanf(fp, "%d", &pid) != 1) pid = 0;
+    std::fclose(fp);
+    return pid > 0 && pid != getpid() && kill(pid, 0) == 0;
+}
+
+void write_loader_lock() {
+    if (FILE *fp = std::fopen(kLoaderLock, "w")) { std::fprintf(fp, "%d", getpid()); std::fclose(fp); }
 }
 
 } // namespace
@@ -297,6 +311,13 @@ int main() {
     unlink(kParkPath);
     say("=== home5 shortcuts reader pid=%d ===", getpid());
 
+    if (another_loader_running()) {
+        say("another reader is already following the thread, not starting a second");
+        notify("Home5 shortcuts", "Already running");
+        return 1;
+    }
+    write_loader_lock();
+
     copy_config_to_tmp();   /* seed /system_tmp from /data if it has no config yet or /data is newer */
     if (!load_config() || g_nsc == 0) {
         say("no shortcuts configured (open Home5 and set some up)");
@@ -306,8 +327,10 @@ int main() {
     say("%d shortcuts, url=%s token=%d", g_nsc, g_url, g_access[0] != 0);
     h5r_net_start();
 
-    const pid_t pid = find_shellui();
-    if (pid <= 0) return 1;
+    /* Wait for SceShellUI so the reader can be autoloaded at boot before the UI is up. */
+    pid_t pid = find_shellui();
+    for (int i = 0; pid <= 0 && i < 120; i++) { sleep(1); pid = find_shellui(); }
+    if (pid <= 0) { say("SceShellUI not found after waiting"); return 1; }
 
     if (read_marker() == pid) {
         say("thread already running in ShellUI pid=%d, following it", pid);
@@ -336,5 +359,6 @@ int main() {
         say("reader exits; the thread keeps reading (load the reader again to follow it)");
         notify("Home5 shortcuts", "Stopped");
     }
+    unlink(kLoaderLock);
     return 0;
 }

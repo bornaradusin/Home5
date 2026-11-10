@@ -43,6 +43,7 @@ int scePadSetVibration(int handle, const PadVibe *param);
 #define POLL_US         20000                /* ~50 Hz, as the overlay reads */
 #define SEQ_TIMEOUT_MS  1500
 #define FLASH_MS        350
+#define RUMBLE_GAP_MS   90
 #define MAX_TRIG        32
 #define MAX_LOG_LINES   20000
 
@@ -58,8 +59,9 @@ typedef struct {
 static Trig g_trig[MAX_TRIG];
 static int g_ntrig;
 static int g_hold_ms = 150;
-static int g_rumble_str = 180;   /* both motors, 0–255 */
-static int g_rumble_ms = 350;    /* how long the rumble pulse lasts */
+static int g_rumble_str = 180;      /* both motors, 0–255 */
+static int g_rumble_ms = 350;       /* how long each rumble pulse lasts */
+static int g_rumble_pulses = 1;     /* how many pulses in a row (1–3) */
 static int g_lines;
 
 static uint64_t now_ms(void)
@@ -114,6 +116,11 @@ static int load_config(void)
         if (!strcmp(key, "rumble_ms")) {
             int v = atoi(trim(val));
             if (v >= 50 && v <= 3000) g_rumble_ms = v;
+            continue;
+        }
+        if (!strcmp(key, "rumble_pulses")) {
+            int v = atoi(trim(val));
+            if (v >= 1 && v <= 3) g_rumble_pulses = v;
             continue;
         }
         if (strcmp(key, "sc") || g_ntrig >= MAX_TRIG) continue;
@@ -181,7 +188,8 @@ __attribute__((noreturn, visibility("default"))) void *elf_main(void *payload_ar
     int handle = -1, pad_user = -1, read_failures = 0, user_check = 0, init_wait = 0, init_logs = 0;
     uint32_t last_buttons = 0xffffffffu, prev_real = 0;
     int last_connected = -1;
-    uint64_t combo_since[MAX_TRIG] = { 0 }, seq_last[MAX_TRIG] = { 0 }, cfg_check = 0, flash_until = 0, rumble_until = 0;
+    uint64_t combo_since[MAX_TRIG] = { 0 }, seq_last[MAX_TRIG] = { 0 }, cfg_check = 0, flash_until = 0, rumble_at = 0;
+    int rumble_phase = 0, rumble_left = 0;
     int combo_fired[MAX_TRIG] = { 0 }, seq_prog[MAX_TRIG] = { 0 };
     time_t cfg_mtime = 0;
 
@@ -208,10 +216,19 @@ __attribute__((noreturn, visibility("default"))) void *elf_main(void *payload_ar
             scePadResetLightBar(handle);
             flash_until = 0;
         }
-        if (rumble_until && t >= rumble_until && handle >= 0) {
-            PadVibe off = { 0, 0 };
-            scePadSetVibration(handle, &off);
-            rumble_until = 0;
+        if (rumble_phase && t >= rumble_at && handle >= 0) {
+            if (rumble_phase == 1) {           /* a pulse just ended */
+                PadVibe off = { 0, 0 };
+                scePadSetVibration(handle, &off);
+                if (rumble_left > 0) { rumble_phase = 2; rumble_at = t + RUMBLE_GAP_MS; }
+                else rumble_phase = 0;
+            } else {                            /* the gap ended, start the next pulse */
+                PadVibe on = { (uint8_t)g_rumble_str, (uint8_t)g_rumble_str };
+                scePadSetVibration(handle, &on);
+                rumble_left--;
+                rumble_phase = 1;
+                rumble_at = t + (uint64_t)g_rumble_ms;
+            }
         }
 
         if (handle < 0) {
@@ -312,7 +329,9 @@ __attribute__((noreturn, visibility("default"))) void *elf_main(void *payload_ar
                 if (rumble && handle >= 0) {
                     PadVibe v = { (uint8_t)g_rumble_str, (uint8_t)g_rumble_str };
                     scePadSetVibration(handle, &v);
-                    rumble_until = t + (uint64_t)g_rumble_ms;
+                    rumble_left = (g_rumble_pulses < 1 ? 1 : g_rumble_pulses) - 1;
+                    rumble_phase = 1;
+                    rumble_at = t + (uint64_t)g_rumble_ms;
                 }
             }
         }
