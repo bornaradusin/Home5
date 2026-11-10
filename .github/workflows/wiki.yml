@@ -1,0 +1,49 @@
+# Copies the wiki/ folder to the repository's wiki whenever a push to main changes it, so the wiki
+# is edited here, on main. GitHub only creates a wiki's own repository once it has a page: open Wiki
+# on GitHub, Create the first page, Save (anything; it gets replaced). Creating that page runs this
+# by itself and fills the wiki in.
+name: Wiki
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "wiki/**"
+  workflow_dispatch:
+  # A page made on GitHub: only acted on while the wiki doesn't have these pages yet (its first page)
+  gollum:
+
+permissions:
+  contents: write
+
+jobs:
+  wiki:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Copy wiki/ to the wiki
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          WIKI="$RUNNER_TEMP/wiki"
+          if ! git clone -q "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.wiki.git" "$WIKI"; then
+            echo "::error::The wiki doesn't exist yet. On GitHub: Wiki › Create the first page › Save. That runs this again by itself."
+            exit 1
+          fi
+          cd "$WIKI"
+          if [ "$GITHUB_EVENT_NAME" = "gollum" ] && [ -f _Sidebar.md ]; then
+            echo "The wiki already has these pages; edit them in wiki/ on main"
+            exit 0
+          fi
+          # The wiki becomes exactly what's in wiki/
+          git rm -q -r --ignore-unmatch -- .
+          cp -r "$GITHUB_WORKSPACE/wiki/." .
+          git add -A
+          if git diff --cached --quiet; then
+            echo "The wiki already matches wiki/"
+            exit 0
+          fi
+          git -c user.name="$GITHUB_ACTOR" -c user.email="$GITHUB_ACTOR@users.noreply.github.com" commit -q -m "Wiki from ${GITHUB_SHA::7}"
+          git push -q origin HEAD
+          echo "Wiki updated"
